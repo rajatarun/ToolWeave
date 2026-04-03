@@ -236,12 +236,14 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # Bedrock
+              # Bedrock — foundation models (direct) and cross-region inference profiles
               - Effect: Allow
                 Action:
                   - bedrock:InvokeModel
                   - bedrock:InvokeModelWithResponseStream
-                Resource: "arn:aws:bedrock:*::foundation-model/*"
+                Resource:
+                  - "arn:aws:bedrock:*::foundation-model/*"
+                  - !Sub "arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*"
               # Own DynamoDB tables
               - Effect: Allow
                 Action:
