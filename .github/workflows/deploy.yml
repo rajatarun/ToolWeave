@@ -46,25 +46,36 @@ jobs:
           }
 
           SUBNET_IDS=$(get_output "LambdaSubnetIds")
-          VPC_ID=$(get_output "VpcId")
           OBS_TABLE=$(get_output "ObservatoryMetricsTableName")
           OBS_TABLE_ARN=$(get_output "ObservatoryMetricsTableArn")
 
           # Validate required outputs
-          if [ -z "$SUBNET_IDS" ] || [ -z "$VPC_ID" ]; then
-            echo "ERROR: Required shared stack outputs are missing."
+          if [ -z "$SUBNET_IDS" ]; then
+            echo "ERROR: LambdaSubnetIds output missing from tarun-teamweave-shared stack."
             echo "Outputs: $OUTPUTS"
             exit 1
           fi
 
-          echo "subnet_ids=$SUBNET_IDS"   >> "$GITHUB_OUTPUT"
-          echo "vpc_id=$VPC_ID"           >> "$GITHUB_OUTPUT"
-          echo "obs_table=$OBS_TABLE"     >> "$GITHUB_OUTPUT"
+          # Derive VPC ID from the first subnet (VpcId is not exported by the shared stack)
+          FIRST_SUBNET=$(echo "$SUBNET_IDS" | cut -d',' -f1)
+          VPC_ID=$(aws ec2 describe-subnets \
+            --subnet-ids "$FIRST_SUBNET" \
+            --query "Subnets[0].VpcId" \
+            --output text)
+
+          if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "None" ]; then
+            echo "ERROR: Could not determine VPC ID from subnet $FIRST_SUBNET."
+            exit 1
+          fi
+
+          echo "subnet_ids=$SUBNET_IDS"       >> "$GITHUB_OUTPUT"
+          echo "vpc_id=$VPC_ID"               >> "$GITHUB_OUTPUT"
+          echo "obs_table=$OBS_TABLE"         >> "$GITHUB_OUTPUT"
           echo "obs_table_arn=$OBS_TABLE_ARN" >> "$GITHUB_OUTPUT"
 
           echo "Shared stack outputs loaded."
           echo "  SubnetIds: $SUBNET_IDS"
-          echo "  VpcId:     $VPC_ID"
+          echo "  VpcId:     $VPC_ID (derived from $FIRST_SUBNET)"
           echo "  ObsTable:  $OBS_TABLE"
 
       # ------------------------------------------------------------------
