@@ -84,6 +84,12 @@ jobs:
           echo "  ObsTable:  $OBS_TABLE"
 
       # ------------------------------------------------------------------
+      # Validate (catches CFN/SAM syntax errors before build)
+      # ------------------------------------------------------------------
+      - name: SAM Validate
+        run: sam validate --lint
+
+      # ------------------------------------------------------------------
       # Build (native — no container needed for pure-Python deps)
       # ------------------------------------------------------------------
       - name: SAM Build

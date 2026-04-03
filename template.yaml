@@ -88,12 +88,12 @@ Resources:
           FromPort: 443
           ToPort: 443
           CidrIp: 0.0.0.0/0
-          Description: HTTPS outbound (IPv4 — VPC endpoints + EIGW targets)
+          Description: HTTPS outbound IPv4 - VPC endpoints and EIGW targets
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
           CidrIpv6: "::/0"
-          Description: HTTPS outbound (IPv6 — EIGW)
+          Description: HTTPS outbound IPv6 - EIGW
       Tags:
         - Key: Project
           Value: ToolWeave
