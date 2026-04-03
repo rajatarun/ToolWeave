@@ -40,6 +40,12 @@ class EndpointEntry(BaseModel):
     base_url: str = ""
     api_id: str = ""
     api_title: str = ""
+    # --- Enrichment fields (populated by endpoint_enricher via Bedrock) ---
+    agent_hint: str = ""              # when to use this vs similar endpoints
+    example_prompts: list[str] = Field(default_factory=list)   # sample NL queries
+    parameter_notes: dict[str, str] = Field(default_factory=dict)  # name → format hint
+    response_hint: str = ""           # key fields in the response
+    idempotent: Optional[bool] = None  # safe to retry?
 
 
 # ---------------------------------------------------------------------------
