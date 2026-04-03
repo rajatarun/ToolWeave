@@ -96,15 +96,21 @@ jobs:
         env:
           OBSERVATORY_SECRET_KEY: ${{ secrets.OBSERVATORY_SECRET_KEY }}
         run: |
+          # Build parameter-overrides string; only include ObservatorySecretKey
+          # when the GitHub secret is actually set (non-empty), otherwise let
+          # the template's default value ("change-me-in-production") apply.
+          PARAM_OVERRIDES="LambdaSubnetIds=\"${{ steps.shared.outputs.subnet_ids }}\""
+          PARAM_OVERRIDES+=" VpcId=\"${{ steps.shared.outputs.vpc_id }}\""
+          PARAM_OVERRIDES+=" ObservatoryMetricsTableName=\"${{ steps.shared.outputs.obs_table }}\""
+          PARAM_OVERRIDES+=" ObservatoryMetricsTableArn=\"${{ steps.shared.outputs.obs_table_arn }}\""
+          if [ -n "$OBSERVATORY_SECRET_KEY" ]; then
+            PARAM_OVERRIDES+=" ObservatorySecretKey=\"$OBSERVATORY_SECRET_KEY\""
+          fi
+
           sam deploy \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
-            --parameter-overrides \
-              LambdaSubnetIds="${{ steps.shared.outputs.subnet_ids }}" \
-              VpcId="${{ steps.shared.outputs.vpc_id }}" \
-              ObservatoryMetricsTableName="${{ steps.shared.outputs.obs_table }}" \
-              ObservatoryMetricsTableArn="${{ steps.shared.outputs.obs_table_arn }}" \
-              ObservatorySecretKey="$OBSERVATORY_SECRET_KEY"
+            --parameter-overrides "$PARAM_OVERRIDES"
 
       # ------------------------------------------------------------------
       # Print Function URL for easy reference
