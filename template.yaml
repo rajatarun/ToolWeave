@@ -27,7 +27,8 @@ Parameters:
   ObservatorySecretKey:
     Type: String
     NoEcho: true
-    Description: Secret key for mcp-observatory HMAC token signing
+    Default: "change-me-in-production"
+    Description: Secret key for mcp-observatory HMAC token signing (set via GitHub secret)
 
   ObservatoryBlockThreshold:
     Type: String
@@ -215,15 +216,17 @@ Resources:
                 Action:
                   - dynamodb:PutItem
                 Resource: !Ref ObservatoryMetricsTableArn
-              # S3
+              # S3 — ARN computed from the deterministic bucket name to avoid
+              # circular dependency: ApiSpecsBucket -> SwaggerProcessorFunction
+              # -> ToolWeaveLambdaRole -> ApiSpecsBucket
               - Effect: Allow
                 Action:
                   - s3:GetObject
                   - s3:PutObject
                   - s3:ListBucket
                 Resource:
-                  - !GetAtt ApiSpecsBucket.Arn
-                  - !Sub "${ApiSpecsBucket.Arn}/*"
+                  - !Sub "arn:aws:s3:::toolweave-api-specs-${AWS::AccountId}-${AWS::Region}"
+                  - !Sub "arn:aws:s3:::toolweave-api-specs-${AWS::AccountId}-${AWS::Region}/*"
 
   # ---- Main ToolWeave FastMCP Lambda ----
   ToolWeaveFunction:
