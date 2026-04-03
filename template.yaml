@@ -271,12 +271,20 @@ Resources:
                   - !Sub "arn:aws:s3:::toolweave-api-specs-${AWS::AccountId}-${AWS::Region}"
                   - !Sub "arn:aws:s3:::toolweave-api-specs-${AWS::AccountId}-${AWS::Region}/*"
 
+  # ---- API Gateway HTTP API (v2) ----
+  ToolWeaveHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowHeaders:
+          - "*"
+        AllowMethods:
+          - "*"
+
   # ---- Main ToolWeave FastMCP Lambda ----
-  # FunctionUrlConfig is intentionally NOT used here — SAM generates extra
-  # permission resources (ToolWeaveFunctionURLInvokeAllowPublicAccess,
-  # ToolWeaveFunctionUrlPublicPermissions) that get pulled into the
-  # ApiSpecsBucket circular-dependency chain.  Instead we use explicit
-  # AWS::Lambda::Url + AWS::Lambda::Permission resources below.
   ToolWeaveFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -288,29 +296,19 @@ Resources:
       MemorySize: 1024
       Tags:
         Project: ToolWeave
-
-  # ---- Function URL (explicit — avoids SAM-generated permission cycle) ----
-  ToolWeaveFunctionUrl:
-    Type: AWS::Lambda::Url
-    Properties:
-      AuthType: NONE
-      InvokeMode: BUFFERED
-      TargetFunctionArn: !GetAtt ToolWeaveFunction.Arn
-      Cors:
-        AllowOrigins:
-          - "*"
-        AllowHeaders:
-          - "*"
-        AllowMethods:
-          - "*"
-
-  ToolWeaveFunctionUrlPublicAccess:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunctionUrl
-      FunctionName: !GetAtt ToolWeaveFunction.Arn
-      Principal: "*"
-      FunctionUrlAuthType: NONE
+      Events:
+        ApiRoot:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ToolWeaveHttpApi
+            Path: /
+            Method: ANY
+        ApiProxy:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ToolWeaveHttpApi
+            Path: /{proxy+}
+            Method: ANY
 
   # ---- Swagger Processor Lambda ----
   # S3 trigger is wired via EventBridge (SwaggerProcessorEventRule above)
@@ -332,11 +330,11 @@ Resources:
 # Outputs
 # ---------------------------------------------------------------------------
 Outputs:
-  ToolWeaveFunctionUrl:
-    Description: MCP endpoint URL for ToolWeave
-    Value: !GetAtt ToolWeaveFunctionUrl.FunctionUrl
+  ToolWeaveApiEndpoint:
+    Description: API Gateway endpoint URL for ToolWeave MCP server
+    Value: !GetAtt ToolWeaveHttpApi.ApiEndpoint
     Export:
-      Name: !Sub "${AWS::StackName}-FunctionUrl"
+      Name: !Sub "${AWS::StackName}-ApiEndpoint"
 
   ApiSpecsBucketName:
     Description: S3 bucket — upload Swagger/OpenAPI files here
