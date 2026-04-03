@@ -98,9 +98,26 @@ Resources:
         - Key: Project
           Value: ToolWeave
 
+  # ---- Lambda permission: allow S3 to invoke SwaggerProcessorFunction ----
+  # Declared BEFORE ApiSpecsBucket so the bucket's NotificationConfiguration
+  # can be validated by S3 (S3 checks the permission exists at creation time).
+  # SourceArn uses !Sub (not !Ref/!GetAtt) to avoid a resource dependency on
+  # ApiSpecsBucket and break the circular dependency chain.
+  SwaggerProcessorS3Permission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt SwaggerProcessorFunction.Arn
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub "arn:aws:s3:::toolweave-api-specs-${AWS::AccountId}-${AWS::Region}"
+      SourceAccount: !Ref AWS::AccountId
+
   # ---- S3 Bucket for Swagger/OpenAPI files ----
+  # DependsOn SwaggerProcessorS3Permission so the Lambda permission exists
+  # before S3 validates the NotificationConfiguration on bucket creation.
   ApiSpecsBucket:
     Type: AWS::S3::Bucket
+    DependsOn: SwaggerProcessorS3Permission
     Properties:
       BucketName: !Sub "toolweave-api-specs-${AWS::AccountId}-${AWS::Region}"
       VersioningConfiguration:
@@ -114,6 +131,29 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: "s3:ObjectCreated:*"
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: ".yaml"
+            Function: !GetAtt SwaggerProcessorFunction.Arn
+          - Event: "s3:ObjectCreated:*"
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: ".yml"
+            Function: !GetAtt SwaggerProcessorFunction.Arn
+          - Event: "s3:ObjectCreated:*"
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: ".json"
+            Function: !GetAtt SwaggerProcessorFunction.Arn
       Tags:
         - Key: Project
           Value: ToolWeave
@@ -251,7 +291,11 @@ Resources:
       Tags:
         Project: ToolWeave
 
-  # ---- Swagger Processor Lambda (S3-triggered for .yaml, .yml, .json) ----
+  # ---- Swagger Processor Lambda ----
+  # S3 trigger is wired manually via SwaggerProcessorS3Permission +
+  # ApiSpecsBucket.NotificationConfiguration to avoid the SAM S3-event
+  # circular dependency (SAM auto-generates SourceArn from !GetAtt bucket,
+  # which creates bucket → function → bucket cycle).
   SwaggerProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -261,40 +305,6 @@ Resources:
       Role: !GetAtt ToolWeaveLambdaRole.Arn
       Timeout: 300
       MemorySize: 512
-      Events:
-        S3ObjectCreatedYaml:
-          Type: S3
-          Properties:
-            Bucket: !Ref ApiSpecsBucket
-            Events:
-              - s3:ObjectCreated:*
-            Filter:
-              S3Key:
-                Rules:
-                  - Name: suffix
-                    Value: ".yaml"
-        S3ObjectCreatedYml:
-          Type: S3
-          Properties:
-            Bucket: !Ref ApiSpecsBucket
-            Events:
-              - s3:ObjectCreated:*
-            Filter:
-              S3Key:
-                Rules:
-                  - Name: suffix
-                    Value: ".yml"
-        S3ObjectCreatedJson:
-          Type: S3
-          Properties:
-            Bucket: !Ref ApiSpecsBucket
-            Events:
-              - s3:ObjectCreated:*
-            Filter:
-              S3Key:
-                Rules:
-                  - Name: suffix
-                    Value: ".json"
       Tags:
         Project: ToolWeave
 
