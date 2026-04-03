@@ -1,0 +1,102 @@
+name: Deploy ToolWeave
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # required for OIDC token issuance
+  contents: read
+
+jobs:
+  deploy:
+    name: SAM Build & Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::239571291755:role/teamweave-github-actions-sam-deployer
+          aws-region: us-east-1
+
+      - name: Set up AWS SAM CLI
+        uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+
+      # ------------------------------------------------------------------
+      # Read outputs from the shared infrastructure stack
+      # ------------------------------------------------------------------
+      - name: Read tarun-teamweave-shared stack outputs
+        id: shared
+        run: |
+          OUTPUTS=$(aws cloudformation describe-stacks \
+            --stack-name tarun-teamweave-shared \
+            --query "Stacks[0].Outputs" \
+            --output json)
+
+          get_output() {
+            echo "$OUTPUTS" | jq -r ".[] | select(.OutputKey==\"$1\") | .OutputValue"
+          }
+
+          SUBNET_IDS=$(get_output "LambdaSubnetIds")
+          VPC_ID=$(get_output "VpcId")
+          OBS_TABLE=$(get_output "ObservatoryMetricsTableName")
+          OBS_TABLE_ARN=$(get_output "ObservatoryMetricsTableArn")
+
+          # Validate required outputs
+          if [ -z "$SUBNET_IDS" ] || [ -z "$VPC_ID" ]; then
+            echo "ERROR: Required shared stack outputs are missing."
+            echo "Outputs: $OUTPUTS"
+            exit 1
+          fi
+
+          echo "subnet_ids=$SUBNET_IDS"   >> "$GITHUB_OUTPUT"
+          echo "vpc_id=$VPC_ID"           >> "$GITHUB_OUTPUT"
+          echo "obs_table=$OBS_TABLE"     >> "$GITHUB_OUTPUT"
+          echo "obs_table_arn=$OBS_TABLE_ARN" >> "$GITHUB_OUTPUT"
+
+          echo "Shared stack outputs loaded."
+          echo "  SubnetIds: $SUBNET_IDS"
+          echo "  VpcId:     $VPC_ID"
+          echo "  ObsTable:  $OBS_TABLE"
+
+      # ------------------------------------------------------------------
+      # Build
+      # ------------------------------------------------------------------
+      - name: SAM Build
+        run: sam build --use-container
+
+      # ------------------------------------------------------------------
+      # Deploy
+      # ------------------------------------------------------------------
+      - name: SAM Deploy
+        env:
+          OBSERVATORY_SECRET_KEY: ${{ secrets.OBSERVATORY_SECRET_KEY }}
+        run: |
+          sam deploy \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              LambdaSubnetIds="${{ steps.shared.outputs.subnet_ids }}" \
+              VpcId="${{ steps.shared.outputs.vpc_id }}" \
+              ObservatoryMetricsTableName="${{ steps.shared.outputs.obs_table }}" \
+              ObservatoryMetricsTableArn="${{ steps.shared.outputs.obs_table_arn }}" \
+              ObservatorySecretKey="$OBSERVATORY_SECRET_KEY"
+
+      # ------------------------------------------------------------------
+      # Print Function URL for easy reference
+      # ------------------------------------------------------------------
+      - name: Print ToolWeave Function URL
+        run: |
+          URL=$(aws cloudformation describe-stacks \
+            --stack-name toolweave \
+            --query "Stacks[0].Outputs[?OutputKey=='ToolWeaveFunctionUrl'].OutputValue" \
+            --output text)
+          echo "ToolWeave MCP endpoint: $URL"
