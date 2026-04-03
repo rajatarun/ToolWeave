@@ -1,0 +1,94 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  ToolWeave — Swagger-to-MCP tool server deployed on AWS Lambda + API Gateway
+
+Parameters:
+  SwaggerSpec:
+    Type: String
+    Description: Path (within the Lambda package) or public URL of the OpenAPI spec
+    Default: "./swagger.yaml"
+
+  BaseUrl:
+    Type: String
+    Description: Override the base URL from the spec (leave empty to use spec value)
+    Default: ""
+
+  DefaultHeaders:
+    Type: String
+    Description: Comma-separated default headers in Name:Value format (e.g. Authorization:Bearer token)
+    Default: ""
+
+  RequestTimeoutMs:
+    Type: Number
+    Description: Per-request timeout in milliseconds
+    Default: 30000
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Timeout: 60
+    MemorySize: 256
+    Environment:
+      Variables:
+        NODE_OPTIONS: "--enable-source-maps"
+
+Resources:
+  ToolWeaveMcpFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-mcp"
+      Handler: dist/lambda-entry.handler
+      Description: "ToolWeave MCP server — exposes OpenAPI endpoints as MCP tools"
+      Environment:
+        Variables:
+          SWAGGER_SPEC: !Ref SwaggerSpec
+          BASE_URL: !Ref BaseUrl
+          DEFAULT_HEADERS: !Ref DefaultHeaders
+          REQUEST_TIMEOUT_MS: !Ref RequestTimeoutMs
+      Events:
+        McpPost:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ToolWeaveApi
+            Method: POST
+            Path: /mcp
+        McpGet:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ToolWeaveApi
+            Method: GET
+            Path: /mcp
+        McpDelete:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ToolWeaveApi
+            Method: DELETE
+            Path: /mcp
+
+  ToolWeaveApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: prod
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowHeaders:
+          - Content-Type
+          - Mcp-Session-Id
+          - Authorization
+        AllowMethods:
+          - GET
+          - POST
+          - DELETE
+          - OPTIONS
+
+Outputs:
+  McpEndpoint:
+    Description: "MCP server endpoint URL"
+    Value: !Sub "https://${ToolWeaveApi}.execute-api.${AWS::Region}.amazonaws.com/prod/mcp"
+
+  FunctionArn:
+    Description: "Lambda function ARN"
+    Value: !GetAtt ToolWeaveMcpFunction.Arn
