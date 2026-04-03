@@ -1,0 +1,14 @@
+[default.deploy.parameters]
+stack_name       = "toolweave"
+region           = "us-east-1"
+capabilities     = "CAPABILITY_IAM"
+confirm_changeset = true
+resolve_s3       = true
+
+# Customise these for your target API
+parameter_overrides = [
+  "SwaggerSpec=./swagger.yaml",
+  "BaseUrl=",
+  "DefaultHeaders=",
+  "RequestTimeoutMs=30000"
+]
