@@ -9,6 +9,7 @@
  *   BASE_URL=https://api.example.com
  *   DEFAULT_HEADERS=Authorization:Bearer ${TOKEN},X-Api-Key:secret
  *   REQUEST_TIMEOUT_MS=10000
+ *   DATA_DICTIONARY_URL=https://abc.lambda-url.us-east-1.on.aws  (optional)
  */
 
 import { APIGatewayProxyEventV2, Context } from "aws-lambda";
@@ -46,7 +47,11 @@ async function initHandler(): Promise<LambdaHandlerFn> {
     `Loaded "${swaggerResult.title}" — ${swaggerResult.endpoints.length} endpoints`
   );
 
-  return createLambdaHandler(() => createMcpServer(swaggerResult, { executeOptions }));
+  const dataDictionaryUrl = process.env["DATA_DICTIONARY_URL"] || undefined;
+
+  return createLambdaHandler(() =>
+    createMcpServer(swaggerResult, { executeOptions, dataDictionaryUrl })
+  );
 }
 
 export const handler = async (

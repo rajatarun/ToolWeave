@@ -25,6 +25,13 @@ Parameters:
     Description: Per-request timeout in milliseconds
     Default: 30000
 
+  DataDictionaryUrl:
+    Type: String
+    Description: >
+      Base URL of the DataDictionary MCP server (e.g. Lambda Function URL).
+      When set, adds dd_get_field / dd_search_fields / dd_list_fields_by_api tools.
+    Default: ""
+
 Globals:
   Function:
     Runtime: nodejs20.x
@@ -47,6 +54,7 @@ Resources:
           BASE_URL: !Ref BaseUrl
           DEFAULT_HEADERS: !Ref DefaultHeaders
           REQUEST_TIMEOUT_MS: !Ref RequestTimeoutMs
+          DATA_DICTIONARY_URL: !Ref DataDictionaryUrl
       Events:
         McpPost:
           Type: HttpApi
