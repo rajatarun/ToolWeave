@@ -1,0 +1,318 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  ToolWeave — FastMCP server that bridges OpenAPI/Swagger specs with AI agents
+  via AWS Bedrock, DataDictionary MCP, and mcp-observatory.
+
+# ---------------------------------------------------------------------------
+# Parameters — populated by GitHub Actions from tarun-teamweave-shared outputs
+# ---------------------------------------------------------------------------
+Parameters:
+  LambdaSubnetIds:
+    Type: CommaDelimitedList
+    Description: Private subnet IDs from tarun-teamweave-shared (LambdaSubnetIds output)
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID from tarun-teamweave-shared (VpcId output)
+
+  ObservatoryMetricsTableName:
+    Type: String
+    Description: Shared observatory metrics DynamoDB table name (ObservatoryMetricsTableName output)
+
+  ObservatoryMetricsTableArn:
+    Type: String
+    Description: Shared observatory metrics DynamoDB table ARN (ObservatoryMetricsTableArn output)
+
+  ObservatorySecretKey:
+    Type: String
+    NoEcho: true
+    Description: Secret key for mcp-observatory HMAC token signing
+
+  ObservatoryBlockThreshold:
+    Type: String
+    Default: "0.45"
+    Description: Risk score threshold above which proposals are blocked
+
+  BedrockModelId:
+    Type: String
+    Default: "us.anthropic.claude-sonnet-4-6-20250514-v1:0"
+    Description: Bedrock model ID for the Converse API agent
+
+  DataDictionaryUrl:
+    Type: String
+    Default: "https://ft5yitoykshqz73sejd7miatze0syqds.lambda-url.us-east-1.on.aws/"
+    Description: DataDictionary MCP Lambda Function URL
+
+# ---------------------------------------------------------------------------
+# Globals
+# ---------------------------------------------------------------------------
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures:
+      - arm64
+    MemorySize: 512
+    Timeout: 60
+    VpcConfig:
+      SubnetIds: !Ref LambdaSubnetIds
+      SecurityGroupIds:
+        - !Ref LambdaSecurityGroup
+    Environment:
+      Variables:
+        AWS_ACCOUNT_ID: !Ref AWS::AccountId
+        CATALOG_TABLE_NAME: !Ref ApiCatalogTable
+        META_TABLE_NAME: !Ref ApiMetaTable
+        PROPOSALS_TABLE_NAME: !Ref ProposalsTable
+        API_SPECS_BUCKET: !Ref ApiSpecsBucket
+        OBSERVATORY_METRICS_TABLE: !Ref ObservatoryMetricsTableName
+        OBSERVATORY_SECRET_KEY: !Ref ObservatorySecretKey
+        OBSERVATORY_BLOCK_THRESHOLD: !Ref ObservatoryBlockThreshold
+        BEDROCK_MODEL_ID: !Ref BedrockModelId
+        DATA_DICTIONARY_URL: !Ref DataDictionaryUrl
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+Resources:
+
+  # ---- Security Group ----
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ToolWeave Lambda — outbound HTTPS only
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS outbound (IPv4 — VPC endpoints + EIGW targets)
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIpv6: "::/0"
+          Description: HTTPS outbound (IPv6 — EIGW)
+      Tags:
+        - Key: Project
+          Value: ToolWeave
+
+  # ---- S3 Bucket for Swagger/OpenAPI files ----
+  ApiSpecsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "toolweave-api-specs-${AWS::AccountId}-${AWS::Region}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: ToolWeave
+
+  # ---- DynamoDB — API Metadata ----
+  ApiMetaTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-ApiMeta"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: api_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: api_id
+          KeyType: HASH
+      Tags:
+        - Key: Project
+          Value: ToolWeave
+
+  # ---- DynamoDB — API Catalog ----
+  ApiCatalogTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-ApiCatalog"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: api_id
+          AttributeType: S
+        - AttributeName: operation_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: api_id
+          KeyType: HASH
+        - AttributeName: operation_id
+          KeyType: RANGE
+      Tags:
+        - Key: Project
+          Value: ToolWeave
+
+  # ---- DynamoDB — Proposals (cross-invocation persistence) ----
+  ProposalsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-Proposals"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: proposal_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: proposal_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: _expires_at
+        Enabled: true
+      Tags:
+        - Key: Project
+          Value: ToolWeave
+
+  # ---- IAM Role — shared by both Lambda functions ----
+  ToolWeaveLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-lambda-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: ToolWeavePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Bedrock
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: "arn:aws:bedrock:*::foundation-model/*"
+              # Own DynamoDB tables
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:DeleteItem
+                  - dynamodb:BatchWriteItem
+                Resource:
+                  - !GetAtt ApiMetaTable.Arn
+                  - !GetAtt ApiCatalogTable.Arn
+                  - !GetAtt ProposalsTable.Arn
+              # Shared observatory metrics table (write only)
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !Ref ObservatoryMetricsTableArn
+              # S3
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt ApiSpecsBucket.Arn
+                  - !Sub "${ApiSpecsBucket.Arn}/*"
+
+  # ---- Main ToolWeave FastMCP Lambda ----
+  ToolWeaveFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-server"
+      CodeUri: src/
+      Handler: toolweave.server.lambda_handler
+      Role: !GetAtt ToolWeaveLambdaRole.Arn
+      Timeout: 120
+      MemorySize: 1024
+      FunctionUrlConfig:
+        AuthType: NONE
+        InvokeMode: BUFFERED
+        Cors:
+          AllowOrigins:
+            - "*"
+          AllowHeaders:
+            - "*"
+          AllowMethods:
+            - "*"
+      Tags:
+        Project: ToolWeave
+
+  # ---- Swagger Processor Lambda (S3-triggered for .yaml, .yml, .json) ----
+  SwaggerProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-swagger-processor"
+      CodeUri: src/
+      Handler: toolweave.swagger_processor.lambda_handler
+      Role: !GetAtt ToolWeaveLambdaRole.Arn
+      Timeout: 300
+      MemorySize: 512
+      Events:
+        S3ObjectCreatedYaml:
+          Type: S3
+          Properties:
+            Bucket: !Ref ApiSpecsBucket
+            Events:
+              - s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: ".yaml"
+        S3ObjectCreatedYml:
+          Type: S3
+          Properties:
+            Bucket: !Ref ApiSpecsBucket
+            Events:
+              - s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: ".yml"
+        S3ObjectCreatedJson:
+          Type: S3
+          Properties:
+            Bucket: !Ref ApiSpecsBucket
+            Events:
+              - s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: ".json"
+      Tags:
+        Project: ToolWeave
+
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+Outputs:
+  ToolWeaveFunctionUrl:
+    Description: MCP endpoint URL for ToolWeave
+    Value: !GetAtt ToolWeaveFunction.FunctionUrl
+    Export:
+      Name: !Sub "${AWS::StackName}-FunctionUrl"
+
+  ApiSpecsBucketName:
+    Description: S3 bucket — upload Swagger/OpenAPI files here
+    Value: !Ref ApiSpecsBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-ApiSpecsBucket"
+
+  ApiCatalogTableName:
+    Description: DynamoDB table name for the API endpoint catalog
+    Value: !Ref ApiCatalogTable
+    Export:
+      Name: !Sub "${AWS::StackName}-ApiCatalogTable"

@@ -1,0 +1,441 @@
+from __future__ import annotations
+
+"""Bedrock Converse agent that powers pre_tool.
+
+The agent runs a tool-use loop using the AWS Bedrock Converse API.  For each
+user message it:
+  1. Calls search_endpoints  → finds candidate API endpoints
+  2. Calls get_endpoint_details → inspects the required fields
+  3. Calls lookup_field_metadata → enriches fields via DataDictionary
+  4. Calls finalize_plan  → builds the PreToolResponse once values are known
+
+If a required field cannot be extracted from the conversation the agent asks
+the user ONE follow-up question (multi-turn, keyed by session_id).
+"""
+
+import asyncio
+import json
+import os
+import re
+from typing import Any
+
+import boto3
+
+from . import catalog_search, data_dictionary_client
+from .models import EndpointEntry, FieldMapping, PreToolResponse
+
+# ---------------------------------------------------------------------------
+# Bedrock client (module-level; boto3 is thread-safe for separate clients)
+# ---------------------------------------------------------------------------
+
+_bedrock = boto3.client(
+    "bedrock-runtime",
+    region_name=os.environ.get("AWS_REGION", "us-east-1"),
+)
+BEDROCK_MODEL_ID = os.environ.get(
+    "BEDROCK_MODEL_ID",
+    "us.anthropic.claude-sonnet-4-6-20250514-v1:0",
+)
+
+# ---------------------------------------------------------------------------
+# Session store (in-memory; warm-container lifetime)
+# ---------------------------------------------------------------------------
+
+_sessions: dict[str, list[dict[str, Any]]] = {}
+
+# ---------------------------------------------------------------------------
+# System prompt
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = (
+    "You are ToolWeave, an AI assistant that maps natural-language requests to REST API calls.\n\n"
+    "Your workflow:\n"
+    "1. Call search_endpoints with the user's intent to find candidate endpoints.\n"
+    "2. Call get_endpoint_details on the best match to see required/optional fields.\n"
+    "3. Call lookup_field_metadata to understand what each field means and expects.\n"
+    "4. Extract field values from the conversation history using the metadata as context.\n"
+    "5. Call finalize_plan with ALL extracted values and a list of any missing REQUIRED fields.\n\n"
+    "Rules:\n"
+    "- If every required field has a value, call finalize_plan immediately.\n"
+    "- If one or more required fields are missing, ask the user ONE concise question "
+    "  to obtain them, then stop (do NOT call finalize_plan yet).\n"
+    "- Never invent or guess IDs, UUIDs, or numeric identifiers not stated by the user.\n"
+    "- For path params such as {orderId}, only use values explicitly provided.\n"
+    "- Prefer the most specific endpoint that matches the user's intent."
+)
+
+# ---------------------------------------------------------------------------
+# Tool definitions passed to Bedrock Converse
+# ---------------------------------------------------------------------------
+
+AGENT_TOOLS: list[dict[str, Any]] = [
+    {
+        "toolSpec": {
+            "name": "search_endpoints",
+            "description": (
+                "Search the loaded API catalog by keyword. "
+                "Returns up to 5 matching endpoints with their operation_id, method, path, and summary."
+            ),
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string", "description": "Search terms"}},
+                    "required": ["query"],
+                }
+            },
+        }
+    },
+    {
+        "toolSpec": {
+            "name": "get_endpoint_details",
+            "description": (
+                "Retrieve the full schema for a specific endpoint: path params, query params, "
+                "and request body fields including which are required."
+            ),
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "operation_id": {
+                            "type": "string",
+                            "description": "The operation_id returned by search_endpoints",
+                        }
+                    },
+                    "required": ["operation_id"],
+                }
+            },
+        }
+    },
+    {
+        "toolSpec": {
+            "name": "lookup_field_metadata",
+            "description": (
+                "Fetch DataDictionary metadata for a list of field names. "
+                "Returns meaning, data type, examples, and constraints for each field."
+            ),
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "field_names": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Field names to look up",
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": "API context name (e.g. 'OrdersAPI')",
+                        },
+                    },
+                    "required": ["field_names", "context"],
+                }
+            },
+        }
+    },
+    {
+        "toolSpec": {
+            "name": "finalize_plan",
+            "description": (
+                "Call this when you have identified the endpoint and extracted all possible field "
+                "values. Provide extracted values and a list of any still-missing required fields."
+            ),
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "operation_id": {"type": "string"},
+                        "path_params": {
+                            "type": "object",
+                            "description": "Values for path parameters",
+                        },
+                        "query_params": {
+                            "type": "object",
+                            "description": "Values for query parameters",
+                        },
+                        "body": {
+                            "type": "object",
+                            "description": "Request body fields and values",
+                        },
+                        "missing_required": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Names of required fields whose values could not be extracted",
+                        },
+                    },
+                    "required": ["operation_id"],
+                }
+            },
+        }
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+
+
+async def run_agent(
+    user_message: str,
+    session_id: str,
+    catalog: list[EndpointEntry],
+    dd_context: str,
+) -> PreToolResponse:
+    """Run the Bedrock Converse agent loop for one user turn.
+
+    Maintains conversation history in _sessions[session_id].
+    Returns a PreToolResponse with status 'ready', 'needs_input', 'no_match', or 'error'.
+    """
+    # Restore or create conversation history
+    history: list[dict[str, Any]] = _sessions.get(session_id, [])
+    history.append({"role": "user", "content": [{"text": user_message}]})
+
+    _finalized: list[PreToolResponse] = []
+
+    loop = asyncio.get_event_loop()
+
+    for _iteration in range(20):  # safety cap on tool-use loops
+        # ---- Bedrock Converse call (sync boto3 wrapped in executor) ----
+        converse_kwargs: dict[str, Any] = {
+            "modelId": BEDROCK_MODEL_ID,
+            "system": [{"text": SYSTEM_PROMPT}],
+            "messages": history,
+            "toolConfig": {"tools": AGENT_TOOLS},
+            "inferenceConfig": {"maxTokens": 2048, "temperature": 0.0},
+        }
+
+        try:
+            response = await loop.run_in_executor(
+                None, lambda kw=converse_kwargs: _bedrock.converse(**kw)
+            )
+        except Exception as exc:
+            _sessions[session_id] = history
+            return PreToolResponse(
+                session_id=session_id,
+                status="error",
+                error=f"Bedrock error: {exc}",
+            )
+
+        assistant_msg = response["output"]["message"]
+        stop_reason = response["stopReason"]
+        history.append(assistant_msg)
+
+        # ---- end_turn → agent produced a text answer (question to user) ----
+        if stop_reason == "end_turn":
+            _sessions[session_id] = history
+            text = _extract_text(assistant_msg)
+            return PreToolResponse(
+                session_id=session_id,
+                status="needs_input",
+                question=text or "Could you provide more information?",
+            )
+
+        # ---- tool_use → process each tool call ----
+        if stop_reason == "tool_use":
+            tool_results: list[dict[str, Any]] = []
+
+            for block in assistant_msg.get("content", []):
+                if block.get("type") != "toolUse":
+                    continue
+
+                tool_name: str = block["name"]
+                tool_input: dict[str, Any] = block.get("input", {})
+                tool_use_id: str = block["toolUseId"]
+
+                result_content = await _dispatch_tool(
+                    tool_name, tool_input, catalog, dd_context, _finalized
+                )
+
+                tool_results.append(
+                    {
+                        "type": "toolResult",
+                        "toolUseId": tool_use_id,
+                        "content": [{"text": json.dumps(result_content, default=str)}],
+                    }
+                )
+
+            history.append({"role": "user", "content": tool_results})
+
+            # If finalize_plan was called, return the result immediately
+            if _finalized:
+                _sessions[session_id] = history
+                return _finalized[0]
+
+        else:
+            # Unexpected stop reason
+            _sessions[session_id] = history
+            return PreToolResponse(
+                session_id=session_id,
+                status="error",
+                error=f"Unexpected stop_reason: {stop_reason}",
+            )
+
+    _sessions[session_id] = history
+    return PreToolResponse(
+        session_id=session_id,
+        status="error",
+        error="Agent exceeded maximum tool-use iterations.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool dispatch
+# ---------------------------------------------------------------------------
+
+
+async def _dispatch_tool(
+    tool_name: str,
+    tool_input: dict[str, Any],
+    catalog: list[EndpointEntry],
+    dd_context: str,
+    finalized: list[PreToolResponse],
+) -> Any:
+    if tool_name == "search_endpoints":
+        return _tool_search_endpoints(tool_input.get("query", ""), catalog)
+
+    if tool_name == "get_endpoint_details":
+        return _tool_get_endpoint_details(tool_input.get("operation_id", ""), catalog)
+
+    if tool_name == "lookup_field_metadata":
+        field_names: list[str] = tool_input.get("field_names", [])
+        context: str = tool_input.get("context", dd_context)
+        return await _tool_lookup_field_metadata(field_names, context)
+
+    if tool_name == "finalize_plan":
+        result = _tool_finalize_plan(tool_input, catalog)
+        finalized.append(result)
+        return {"status": "plan_finalized", "session_id": result.session_id}
+
+    return {"error": f"Unknown tool: {tool_name}"}
+
+
+# ---------------------------------------------------------------------------
+# Individual tool implementations
+# ---------------------------------------------------------------------------
+
+
+def _tool_search_endpoints(query: str, catalog: list[EndpointEntry]) -> list[dict[str, Any]]:
+    results = catalog_search.search(query, catalog, top_k=5)
+    if not results:
+        return [{"message": "No matching endpoints found. Try different keywords."}]
+    return results
+
+
+def _tool_get_endpoint_details(
+    operation_id: str,
+    catalog: list[EndpointEntry],
+) -> dict[str, Any]:
+    entry = next((e for e in catalog if e.operation_id == operation_id), None)
+    if not entry:
+        return {"error": f"operation_id '{operation_id}' not found in catalog."}
+
+    return {
+        "operation_id": entry.operation_id,
+        "method": entry.method,
+        "path": entry.path,
+        "summary": entry.summary,
+        "base_url": entry.base_url,
+        "path_params": [p.model_dump() for p in entry.parameters if p.location == "path"],
+        "query_params": [p.model_dump() for p in entry.parameters if p.location == "query"],
+        "header_params": [p.model_dump() for p in entry.parameters if p.location == "header"],
+        "body_fields": [f.model_dump() for f in entry.body_fields],
+    }
+
+
+async def _tool_lookup_field_metadata(
+    field_names: list[str],
+    context: str,
+) -> dict[str, Any]:
+    metadata = await data_dictionary_client.fetch_field_metadata(field_names, context)
+    return {
+        name: meta.model_dump() if meta else None
+        for name, meta in metadata.items()
+    }
+
+
+def _tool_finalize_plan(
+    tool_input: dict[str, Any],
+    catalog: list[EndpointEntry],
+) -> PreToolResponse:
+    import uuid
+
+    operation_id: str = tool_input.get("operation_id", "")
+    path_params: dict[str, Any] = tool_input.get("path_params") or {}
+    query_params: dict[str, Any] = tool_input.get("query_params") or {}
+    body: dict[str, Any] | None = tool_input.get("body") or None
+    missing_required: list[str] = tool_input.get("missing_required") or []
+
+    entry = next((e for e in catalog if e.operation_id == operation_id), None)
+    if not entry:
+        return PreToolResponse(
+            session_id=str(uuid.uuid4()),
+            status="error",
+            error=f"operation_id '{operation_id}' not found when finalizing plan.",
+        )
+
+    # Resolve path template
+    resolved_path = entry.path
+    for key, value in path_params.items():
+        resolved_path = resolved_path.replace(f"{{{key}}}", str(value))
+
+    # Build field mappings for traceability
+    field_mappings: list[FieldMapping] = []
+    for param in entry.parameters:
+        if param.location == "path":
+            v = path_params.get(param.name)
+        elif param.location == "query":
+            v = query_params.get(param.name)
+        else:
+            continue
+        field_mappings.append(
+            FieldMapping(
+                field_name=param.name,
+                location=param.location,
+                extracted_value=v,
+                value_present=v is not None,
+            )
+        )
+    for bf in entry.body_fields:
+        # Support dot-notation for nested body fields
+        parts = bf.name.split(".")
+        v: Any = body
+        for part in parts:
+            v = v.get(part) if isinstance(v, dict) else None
+        field_mappings.append(
+            FieldMapping(
+                field_name=bf.name,
+                location="body",
+                extracted_value=v,
+                value_present=v is not None,
+            )
+        )
+
+    execution_type = "immediate" if entry.method == "GET" else "proposal"
+
+    return PreToolResponse(
+        session_id=str(uuid.uuid4()),
+        status="ready",
+        matched_endpoint=f"{entry.method} {entry.path}",
+        operation_id=operation_id,
+        execution_type=execution_type,  # type: ignore[arg-type]
+        method=entry.method,
+        path=resolved_path,
+        base_url=entry.base_url,
+        path_params=path_params,
+        query_params=query_params,
+        body=body,
+        field_mappings=field_mappings,
+        missing_required_fields=missing_required,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_text(message: dict[str, Any]) -> str:
+    for block in message.get("content", []):
+        if block.get("type") == "text":
+            return block["text"]
+    return ""
