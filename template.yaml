@@ -81,7 +81,7 @@ Resources:
   LambdaSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: ToolWeave Lambda — outbound HTTPS only
+      GroupDescription: ToolWeave Lambda - outbound HTTPS only
       VpcId: !Ref VpcId
       SecurityGroupEgress:
         - IpProtocol: tcp
