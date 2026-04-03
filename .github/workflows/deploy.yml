@@ -121,10 +121,10 @@ jobs:
       # ------------------------------------------------------------------
       # Print Function URL for easy reference
       # ------------------------------------------------------------------
-      - name: Print ToolWeave Function URL
+      - name: Print ToolWeave API endpoint
         run: |
           URL=$(aws cloudformation describe-stacks \
             --stack-name toolweave \
-            --query "Stacks[0].Outputs[?OutputKey=='ToolWeaveFunctionUrl'].OutputValue" \
+            --query "Stacks[0].Outputs[?OutputKey=='ToolWeaveApiEndpoint'].OutputValue" \
             --output text)
           echo "ToolWeave MCP endpoint: $URL"
