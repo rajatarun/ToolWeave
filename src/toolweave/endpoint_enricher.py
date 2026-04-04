@@ -18,6 +18,7 @@ import os
 from typing import Any
 
 import boto3
+from botocore.config import Config
 
 from .models import EndpointEntry
 
@@ -29,6 +30,9 @@ _ENRICHER_MODEL_ID = os.environ.get(
     "anthropic.claude-3-haiku-20240307-v1:0",
 )
 _BATCH_SIZE = 15  # endpoints per Bedrock call
+_CONNECT_TIMEOUT_SECONDS = int(os.environ.get("ENRICHER_CONNECT_TIMEOUT_SECONDS", "5"))
+_READ_TIMEOUT_SECONDS = int(os.environ.get("ENRICHER_READ_TIMEOUT_SECONDS", "45"))
+_MAX_ATTEMPTS = int(os.environ.get("ENRICHER_MAX_ATTEMPTS", "2"))
 
 _SYSTEM_PROMPT = """\
 You are an API catalog enricher. Your output is stored in a vector database \
@@ -70,6 +74,11 @@ def _client() -> Any:
     return boto3.client(
         "bedrock-runtime",
         region_name=os.environ.get("AWS_REGION", "us-east-1"),
+        config=Config(
+            connect_timeout=_CONNECT_TIMEOUT_SECONDS,
+            read_timeout=_READ_TIMEOUT_SECONDS,
+            retries={"max_attempts": _MAX_ATTEMPTS, "mode": "standard"},
+        ),
     )
 
 
@@ -122,9 +131,15 @@ def _enrich_batch(
     )
 
     logger.info(
-        "Calling Bedrock enricher for batch_size=%d (first_operation_id=%r)",
+        (
+            "Calling Bedrock enricher for batch_size=%d (first_operation_id=%r, "
+            "connect_timeout=%ss, read_timeout=%ss, max_attempts=%d)"
+        ),
         len(entries),
         entries[0].operation_id if entries else None,
+        _CONNECT_TIMEOUT_SECONDS,
+        _READ_TIMEOUT_SECONDS,
+        _MAX_ATTEMPTS,
     )
 
     response = _client().converse(
