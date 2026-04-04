@@ -76,24 +76,55 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:  # no
 def _process_file(bucket: str, key: str) -> None:
     logger.info("Processing s3://%s/%s", bucket, key)
 
+    logger.info("Fetching OpenAPI object from S3 (bucket=%s, key=%s)", bucket, key)
     response = _s3.get_object(Bucket=bucket, Key=key)
     content: bytes = response["Body"].read()
+    logger.info(
+        "Fetched %d bytes from s3://%s/%s",
+        len(content),
+        bucket,
+        key,
+    )
 
+    logger.info("Loading OpenAPI document for key=%s", key)
     raw = load_spec_from_bytes(content, filename=key)
     api_id = api_id_from_s3_key(key)
+    logger.info("Derived api_id=%s from key=%s", api_id, key)
+
+    logger.info("Parsing endpoints from spec for api_id=%s", api_id)
     entries, base_url, api_title = parse_spec(raw, api_id=api_id)
+    logger.info(
+        "Parsed spec for api_id=%s (title=%r, base_url=%r, endpoints=%d)",
+        api_id,
+        api_title,
+        base_url,
+        len(entries),
+    )
 
     if not entries:
         logger.warning("No endpoints found in %s — skipping DynamoDB write.", key)
         return
 
     context_name = re.sub(r"[^a-zA-Z0-9]+", "", api_title)
+    logger.info(
+        "Computed context_name=%r for api_id=%s",
+        context_name,
+        api_id,
+    )
 
     # Enrich entries via Bedrock before persisting
+    logger.info("Starting endpoint enrichment for api_id=%s", api_id)
     entries = endpoint_enricher.enrich_endpoints(entries)
+    logger.info(
+        "Completed endpoint enrichment for api_id=%s (endpoints=%d)",
+        api_id,
+        len(entries),
+    )
 
+    logger.info("Deleting existing DynamoDB records for api_id=%s", api_id)
     dynamodb_client.delete_api_entries(api_id)
 
+    logger.info("Writing API metadata row for api_id=%s", api_id)
     dynamodb_client.write_api_meta(
         api_id=api_id,
         s3_key=key,
@@ -103,6 +134,11 @@ def _process_file(bucket: str, key: str) -> None:
         endpoint_count=len(entries),
     )
 
+    logger.info(
+        "Writing %d endpoint rows to ApiCatalogTable for api_id=%s",
+        len(entries),
+        api_id,
+    )
     dynamodb_client.write_endpoint_batch(api_id, entries)
 
     logger.info(
