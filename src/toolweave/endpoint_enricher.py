@@ -200,10 +200,21 @@ def _enrich_one(
                 break
         # Single-object response — treat it as the enrichment directly.
         if isinstance(parsed, dict):
+            logger.info(
+                "Parsed enrichment payload for operation_id=%r: %s",
+                entry.operation_id,
+                json.dumps(parsed, ensure_ascii=False),
+            )
             return parsed
 
     if isinstance(parsed, list) and parsed:
-        return parsed[0] if isinstance(parsed[0], dict) else {}
+        first_item = parsed[0] if isinstance(parsed[0], dict) else {}
+        logger.info(
+            "Parsed enrichment payload for operation_id=%r: %s",
+            entry.operation_id,
+            json.dumps(first_item, ensure_ascii=False),
+        )
+        return first_item
 
     raise ValueError(
         f"Enricher output for {entry.operation_id!r} was not a usable object or array"
