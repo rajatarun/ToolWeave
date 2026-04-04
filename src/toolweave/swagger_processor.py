@@ -115,11 +115,28 @@ def _process_file(bucket: str, key: str) -> None:
     # Enrich entries via Bedrock before persisting
     logger.info("Starting endpoint enrichment for api_id=%s", api_id)
     entries = endpoint_enricher.enrich_endpoints(entries)
+    enriched_count = sum(
+        1
+        for entry in entries
+        if entry.agent_hint
+        or entry.example_prompts
+        or entry.parameter_notes
+        or entry.response_hint
+        or entry.idempotent is not None
+    )
     logger.info(
-        "Completed endpoint enrichment for api_id=%s (endpoints=%d)",
+        "Completed endpoint enrichment for api_id=%s (endpoints=%d, enriched=%d, skipped=%d)",
         api_id,
         len(entries),
+        enriched_count,
+        len(entries) - enriched_count,
     )
+    if enriched_count == 0:
+        logger.warning(
+            "No endpoint metadata was enriched for api_id=%s. "
+            "Inspect endpoint_enricher logs for Bedrock call failures/timeouts.",
+            api_id,
+        )
 
     logger.info("Deleting existing DynamoDB records for api_id=%s", api_id)
     dynamodb_client.delete_api_entries(api_id)
