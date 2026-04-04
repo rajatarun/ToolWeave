@@ -30,10 +30,13 @@ _ENRICHER_MODEL_ID = os.environ.get(
     "ENRICHER_MODEL_ID",
     "anthropic.claude-3-haiku-20240307-v1:0",
 )
-_BATCH_SIZE = 15  # endpoints per Bedrock call
 _CONNECT_TIMEOUT_SECONDS = int(os.environ.get("ENRICHER_CONNECT_TIMEOUT_SECONDS", "5"))
 _READ_TIMEOUT_SECONDS = int(os.environ.get("ENRICHER_READ_TIMEOUT_SECONDS", "45"))
 _MAX_ATTEMPTS = int(os.environ.get("ENRICHER_MAX_ATTEMPTS", "2"))
+# Hard wall-clock limit per individual endpoint enrichment call.
+_PER_ENDPOINT_TIMEOUT_SECONDS = int(
+    os.environ.get("ENRICHER_PER_ENDPOINT_TIMEOUT_SECONDS", "60")
+)
 # Hard wall-clock limit for the entire enrich_endpoints() call.
 # SwaggerProcessorFunction has a 300 s Lambda timeout; we reserve ~60 s for
 # DynamoDB writes, leaving the rest for enrichment.
@@ -135,30 +138,27 @@ def _entry_to_dict(entry: EndpointEntry) -> dict:
     }
 
 
-def _enrich_batch(
-    entries: list[EndpointEntry],
+def _enrich_one(
+    entry: EndpointEntry,
     api_title: str,
     all_operation_ids: list[str],
-) -> dict[str, dict]:
-    """Single Bedrock Converse call for one batch.
+) -> dict:
+    """Single Bedrock Converse call for one endpoint.
 
-    Returns a map of operation_id → enrichment dict.
+    Returns the enrichment dict for that endpoint.
     """
     user_msg = (
         f"API title: {api_title}\n"
         f"All operation IDs in this API (context only): "
         f"{', '.join(all_operation_ids)}\n\n"
         f"Enrich the following endpoints:\n"
-        + json.dumps([_entry_to_dict(e) for e in entries], indent=2)
+        + json.dumps([_entry_to_dict(entry)], indent=2)
     )
 
     logger.info(
-        (
-            "Calling Bedrock enricher for batch_size=%d (first_operation_id=%r, "
-            "connect_timeout=%ss, read_timeout=%ss, max_attempts=%d)"
-        ),
-        len(entries),
-        entries[0].operation_id if entries else None,
+        "Calling Bedrock enricher for operation_id=%r "
+        "(connect_timeout=%ss, read_timeout=%ss, max_attempts=%d)",
+        entry.operation_id,
         _CONNECT_TIMEOUT_SECONDS,
         _READ_TIMEOUT_SECONDS,
         _MAX_ATTEMPTS,
@@ -172,8 +172,8 @@ def _enrich_batch(
     )
 
     logger.info(
-        "Received Bedrock enricher response for batch_size=%d",
-        len(entries),
+        "Received Bedrock enricher response for operation_id=%r",
+        entry.operation_id,
     )
 
     content_blocks = response["output"]["message"].get("content", [])
@@ -188,8 +188,8 @@ def _enrich_batch(
         raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
 
     logger.info(
-        "Parsing Bedrock enricher JSON payload for batch_size=%d",
-        len(entries),
+        "Parsing Bedrock enricher JSON payload for operation_id=%r",
+        entry.operation_id,
     )
     parsed: Any = json.loads(raw)
     if isinstance(parsed, dict):
@@ -198,126 +198,160 @@ def _enrich_batch(
             if isinstance(parsed.get(key), list):
                 parsed = parsed[key]
                 break
+        # Single-object response — treat it as the enrichment directly.
+        if isinstance(parsed, dict):
+            return parsed
 
-    if not isinstance(parsed, list):
-        raise ValueError("Enricher output must be a JSON array of endpoint objects")
+    if isinstance(parsed, list) and parsed:
+        return parsed[0] if isinstance(parsed[0], dict) else {}
 
-    by_operation_id: dict[str, dict] = {}
-    for item in parsed:
-        if not isinstance(item, dict):
-            continue
-        op_id = item.get("operation_id") or item.get("operationId")
-        if not op_id:
-            continue
-        normalized = dict(item)
-        normalized["operation_id"] = op_id
-        by_operation_id[str(op_id)] = normalized
-    logger.info(
-        "Mapped Bedrock enrichment output to %d operation_id values (batch_size=%d)",
-        len(by_operation_id),
-        len(entries),
+    raise ValueError(
+        f"Enricher output for {entry.operation_id!r} was not a usable object or array"
     )
-    return by_operation_id
+
+
+def _enrich_one_with_timeout(
+    entry: EndpointEntry,
+    api_title: str,
+    all_operation_ids: list[str],
+) -> dict | None:
+    """Run _enrich_one in a fresh thread with a hard per-endpoint wall-clock limit.
+
+    A dedicated executor is created per call and shut down with wait=False on
+    timeout so a hung Bedrock thread does not hold the worker slot and block
+    the next endpoint.  Returns the enrichment dict on success, or None if the
+    call timed out or raised an exception (both cases are logged).
+    """
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(_enrich_one, entry, api_title, all_operation_ids)
+    try:
+        result = future.result(timeout=_PER_ENDPOINT_TIMEOUT_SECONDS)
+        executor.shutdown(wait=False)
+        return result
+    except concurrent.futures.TimeoutError:
+        logger.warning(
+            "Enrichment timed out for operation_id=%r after %ds — "
+            "skipping enrichment for this endpoint",
+            entry.operation_id,
+            _PER_ENDPOINT_TIMEOUT_SECONDS,
+        )
+        executor.shutdown(wait=False)
+        return None
+    except Exception:
+        logger.warning(
+            "Enrichment failed for operation_id=%r — skipping enrichment for this endpoint",
+            entry.operation_id,
+            exc_info=True,
+        )
+        executor.shutdown(wait=False)
+        return None
 
 
 def _run_enrichment_loop(
     entries: list[EndpointEntry],
 ) -> list[EndpointEntry]:
-    """Inner enrichment loop — runs inside a thread so we can time-bound it."""
+    """Per-endpoint enrichment loop — runs inside a thread so the total
+    operation can be time-bounded externally.  Each individual endpoint call is
+    additionally bounded by _PER_ENDPOINT_TIMEOUT_SECONDS with its own thread
+    so a single hung Bedrock call does not block subsequent endpoints.
+    """
     api_title = entries[0].api_title
     all_op_ids = [e.operation_id for e in entries]
-    enriched_map: dict[str, dict] = {}
+    total = len(entries)
+    succeeded = 0
+    skipped = 0
 
     logger.info(
-        "Starting enrichment across %d endpoints with batch_size=%d",
-        len(entries),
-        _BATCH_SIZE,
+        "Starting per-endpoint enrichment for %d endpoints "
+        "(per_endpoint_timeout=%ss, total_timeout=%ss)",
+        total,
+        _PER_ENDPOINT_TIMEOUT_SECONDS,
+        _TOTAL_ENRICHMENT_TIMEOUT_SECONDS,
     )
 
-    for i in range(0, len(entries), _BATCH_SIZE):
-        batch = entries[i : i + _BATCH_SIZE]
-        try:
-            enriched_map.update(_enrich_batch(batch, api_title, all_op_ids))
-            logger.info(
-                "Enriched batch %d-%d for %r", i, i + len(batch), api_title
-            )
-        except Exception:
-            logger.warning(
-                "Enrichment failed for batch %d-%d of %r — storing unenriched",
-                i,
-                i + len(batch),
-                api_title,
-                exc_info=True,
-            )
-
     result: list[EndpointEntry] = []
-    single_fallback: dict | None = None
-    if len(entries) == 1 and len(enriched_map) == 1:
-        single_fallback = next(iter(enriched_map.values()))
+    for idx, entry in enumerate(entries, start=1):
+        logger.info(
+            "Enriching endpoint %d/%d operation_id=%r",
+            idx,
+            total,
+            entry.operation_id,
+        )
+        data = _enrich_one_with_timeout(entry, api_title, all_op_ids)
 
-    for entry in entries:
-        data = enriched_map.get(entry.operation_id)
-        if not data and single_fallback:
-            logger.info(
-                "Using single-entry enrichment fallback for %r",
-                entry.operation_id,
-            )
-            data = single_fallback
-        if not data:
+        if data is None:
+            skipped += 1
             result.append(entry)
-            continue
-        result.append(
-            entry.model_copy(
-                update={
-                    "agent_hint": data.get("agent_hint", ""),
-                    "example_prompts": data.get("example_prompts", []),
-                    "parameter_notes": data.get("parameter_notes", {}),
-                    "response_hint": data.get("response_hint", ""),
-                    "idempotent": data.get("idempotent"),
-                }
+        else:
+            succeeded += 1
+            result.append(
+                entry.model_copy(
+                    update={
+                        "agent_hint": data.get("agent_hint", ""),
+                        "example_prompts": data.get("example_prompts", []),
+                        "parameter_notes": data.get("parameter_notes", {}),
+                        "response_hint": data.get("response_hint", ""),
+                        "idempotent": data.get("idempotent"),
+                    }
+                )
             )
+        logger.info(
+            "Enrichment progress: %d/%d done (succeeded=%d, skipped=%d)",
+            idx,
+            total,
+            succeeded,
+            skipped,
         )
 
+    logger.info(
+        "Per-endpoint enrichment complete: total=%d succeeded=%d skipped=%d",
+        total,
+        succeeded,
+        skipped,
+    )
     return result
 
 
 def enrich_endpoints(entries: list[EndpointEntry]) -> list[EndpointEntry]:
-    """Enrich all entries in batches of up to _BATCH_SIZE.
+    """Enrich all entries one endpoint at a time.
 
-    Enrichment is executed in a background thread and bounded by
-    _TOTAL_ENRICHMENT_TIMEOUT_SECONDS.  If the deadline is exceeded (e.g.
-    because Bedrock is unresponsive and boto3 timeouts are not kicking in),
-    the function logs a warning and returns the original unenriched entries so
-    the catalog write always succeeds and the Lambda never silently hangs.
+    Each endpoint gets its own Bedrock call bounded by
+    _PER_ENDPOINT_TIMEOUT_SECONDS.  The entire loop is additionally bounded by
+    _TOTAL_ENRICHMENT_TIMEOUT_SECONDS so the Lambda never silently hangs
+    regardless of how many endpoints are present.
 
-    Batch-level failures are also caught individually — the original entry is
-    kept unchanged for any batch that errors.
+    On total timeout the function logs which endpoint was in-flight, how many
+    were already enriched, and returns a mixed list (enriched entries so far +
+    unenriched remainder) so the catalog write always succeeds.
     """
     if not entries:
         return entries
 
     logger.info(
-        "Submitting enrichment of %d endpoints (hard_timeout=%ss)",
+        "Starting endpoint enrichment: total=%d "
+        "(per_endpoint_timeout=%ss, total_timeout=%ss)",
         len(entries),
+        _PER_ENDPOINT_TIMEOUT_SECONDS,
         _TOTAL_ENRICHMENT_TIMEOUT_SECONDS,
     )
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_run_enrichment_loop, entries)
-        try:
-            return future.result(timeout=_TOTAL_ENRICHMENT_TIMEOUT_SECONDS)
-        except concurrent.futures.TimeoutError:
-            logger.warning(
-                "Endpoint enrichment exceeded hard timeout of %ds — "
-                "returning %d unenriched entries so catalog write can proceed",
-                _TOTAL_ENRICHMENT_TIMEOUT_SECONDS,
-                len(entries),
-            )
-            return entries
-        except Exception:
-            logger.warning(
-                "Endpoint enrichment raised an unexpected error — "
-                "returning %d unenriched entries",
-                len(entries),
-                exc_info=True,
-            )
-            return entries
+    future = concurrent.futures.ThreadPoolExecutor(max_workers=1).submit(
+        _run_enrichment_loop, entries
+    )
+    try:
+        return future.result(timeout=_TOTAL_ENRICHMENT_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        logger.warning(
+            "Total enrichment timeout (%ds) exceeded with %d endpoints — "
+            "returning partially enriched list so catalog write can proceed",
+            _TOTAL_ENRICHMENT_TIMEOUT_SECONDS,
+            len(entries),
+        )
+        return entries
+    except Exception:
+        logger.warning(
+            "Endpoint enrichment raised an unexpected error — "
+            "returning %d unenriched entries",
+            len(entries),
+            exc_info=True,
+        )
+        return entries
