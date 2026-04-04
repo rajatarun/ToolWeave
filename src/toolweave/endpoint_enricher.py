@@ -182,6 +182,11 @@ def _enrich_one(
         for block in content_blocks
         if isinstance(block, dict) and block.get("text")
     ).strip()
+    logger.info(
+        "Raw Bedrock enricher model response for operation_id=%r: %s",
+        entry.operation_id,
+        raw,
+    )
 
     # Strip markdown code fences if the model wraps its output
     if raw.startswith("```"):
