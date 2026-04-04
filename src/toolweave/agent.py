@@ -34,7 +34,7 @@ _bedrock = boto3.client(
 )
 BEDROCK_MODEL_ID = os.environ.get(
     "BEDROCK_MODEL_ID",
-    "us.anthropic.claude-sonnet-4-6-20250514-v1:0",
+    "anthropic.claude-3-haiku-20240307-v1:0",
 )
 
 # ---------------------------------------------------------------------------
