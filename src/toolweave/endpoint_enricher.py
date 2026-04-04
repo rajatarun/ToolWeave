@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # Haiku is fast and cheap for structured enrichment; override via env var if needed.
 _ENRICHER_MODEL_ID = os.environ.get(
     "ENRICHER_MODEL_ID",
-    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "anthropic.claude-3-haiku-20240307-v1:0",
 )
 _BATCH_SIZE = 15  # endpoints per Bedrock call
 
