@@ -24,6 +24,7 @@ from botocore.config import Config
 from .models import EndpointEntry
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # Haiku is fast and cheap for structured enrichment; override via env var if needed.
 _ENRICHER_MODEL_ID = os.environ.get(
@@ -345,8 +346,9 @@ def enrich_endpoints(entries: list[EndpointEntry]) -> list[EndpointEntry]:
 
     logger.info(
         "Starting endpoint enrichment: total=%d "
-        "(per_endpoint_timeout=%ss, total_timeout=%ss)",
+        "(model_id=%s, per_endpoint_timeout=%ss, total_timeout=%ss)",
         len(entries),
+        _ENRICHER_MODEL_ID,
         _PER_ENDPOINT_TIMEOUT_SECONDS,
         _TOTAL_ENRICHMENT_TIMEOUT_SECONDS,
     )
