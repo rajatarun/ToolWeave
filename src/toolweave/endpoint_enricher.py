@@ -121,6 +121,14 @@ def _enrich_batch(
         + json.dumps([_entry_to_dict(e) for e in entries], indent=2)
     )
 
+    batch_op_ids = [e.operation_id for e in entries]
+    logger.info(
+        "Starting enrichment batch for %r with %d endpoints: %s",
+        api_title,
+        len(entries),
+        ", ".join(batch_op_ids),
+    )
+
     response = _client().converse(
         modelId=_ENRICHER_MODEL_ID,
         system=[{"text": _SYSTEM_PROMPT}],
@@ -128,14 +136,67 @@ def _enrich_batch(
         inferenceConfig={"maxTokens": 4096, "temperature": 0},
     )
 
-    raw: str = response["output"]["message"]["content"][0]["text"].strip()
+    content_blocks = response["output"]["message"].get("content", [])
+    raw = "".join(
+        block.get("text", "")
+        for block in content_blocks
+        if isinstance(block, dict) and block.get("text")
+    ).strip()
+    logger.info(
+        "Received enricher response for %r batch (%d blocks, %d chars)",
+        api_title,
+        len(content_blocks),
+        len(raw),
+    )
 
     # Strip markdown code fences if the model wraps its output
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
 
-    enriched_list: list[dict] = json.loads(raw)
-    return {item["operation_id"]: item for item in enriched_list}
+    parsed: Any = json.loads(raw)
+    if isinstance(parsed, dict):
+        # Some model runs wrap the list under an object key.
+        for key in ("items", "results", "endpoints", "data"):
+            if isinstance(parsed.get(key), list):
+                logger.info(
+                    "Unwrapped enricher response using key %r for %r batch",
+                    key,
+                    api_title,
+                )
+                parsed = parsed[key]
+                break
+
+    if not isinstance(parsed, list):
+        raise ValueError("Enricher output must be a JSON array of endpoint objects")
+
+    by_operation_id: dict[str, dict] = {}
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        op_id = item.get("operation_id") or item.get("operationId")
+        if not op_id:
+            continue
+        normalized = dict(item)
+        normalized["operation_id"] = op_id
+        by_operation_id[str(op_id)] = normalized
+
+    missing_from_response = [op_id for op_id in batch_op_ids if op_id not in by_operation_id]
+    extra_in_response = [op_id for op_id in by_operation_id if op_id not in batch_op_ids]
+    if missing_from_response:
+        logger.warning(
+            "Enricher response missing %d operation_ids for %r batch: %s",
+            len(missing_from_response),
+            api_title,
+            ", ".join(missing_from_response),
+        )
+    if extra_in_response:
+        logger.warning(
+            "Enricher response returned %d unexpected operation_ids for %r batch: %s",
+            len(extra_in_response),
+            api_title,
+            ", ".join(extra_in_response),
+        )
+    return by_operation_id
 
 
 def enrich_endpoints(entries: list[EndpointEntry]) -> list[EndpointEntry]:
@@ -160,16 +221,27 @@ def enrich_endpoints(entries: list[EndpointEntry]) -> list[EndpointEntry]:
             )
         except Exception:
             logger.warning(
-                "Enrichment failed for batch %d-%d of %r — storing unenriched",
+                "Enrichment failed for batch %d-%d of %r (ops: %s) — storing unenriched",
                 i,
                 i + len(batch),
                 api_title,
+                ", ".join(e.operation_id for e in batch),
                 exc_info=True,
             )
 
     result: list[EndpointEntry] = []
+    single_fallback: dict | None = None
+    if len(entries) == 1 and len(enriched_map) == 1:
+        single_fallback = next(iter(enriched_map.values()))
+
     for entry in entries:
         data = enriched_map.get(entry.operation_id)
+        if not data and single_fallback:
+            logger.info(
+                "Using single-entry enrichment fallback for %r",
+                entry.operation_id,
+            )
+            data = single_fallback
         if not data:
             result.append(entry)
             continue
