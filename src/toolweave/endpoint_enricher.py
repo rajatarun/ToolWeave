@@ -12,6 +12,7 @@ agent-friendly metadata that reduces hallucinations during API call planning:
   idempotent       — whether calling twice has no additional side-effect
 """
 
+import concurrent.futures
 import json
 import logging
 import os
@@ -33,6 +34,12 @@ _BATCH_SIZE = 15  # endpoints per Bedrock call
 _CONNECT_TIMEOUT_SECONDS = int(os.environ.get("ENRICHER_CONNECT_TIMEOUT_SECONDS", "5"))
 _READ_TIMEOUT_SECONDS = int(os.environ.get("ENRICHER_READ_TIMEOUT_SECONDS", "45"))
 _MAX_ATTEMPTS = int(os.environ.get("ENRICHER_MAX_ATTEMPTS", "2"))
+# Hard wall-clock limit for the entire enrich_endpoints() call.
+# SwaggerProcessorFunction has a 300 s Lambda timeout; we reserve ~60 s for
+# DynamoDB writes, leaving the rest for enrichment.
+_TOTAL_ENRICHMENT_TIMEOUT_SECONDS = int(
+    os.environ.get("ENRICHER_TOTAL_TIMEOUT_SECONDS", "220")
+)
 
 _SYSTEM_PROMPT = """\
 You are an API catalog enricher. Your output is stored in a vector database \
@@ -70,16 +77,31 @@ the input. No prose, no markdown fences, no trailing commas.\
 """
 
 
+# Cached at module level so we pay the client initialisation cost once per
+# Lambda container, not once per batch call (which could trigger credential
+# resolution or connection-pool setup on every invocation).
+_BEDROCK_CLIENT: Any = None
+
+
 def _client() -> Any:
-    return boto3.client(
-        "bedrock-runtime",
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
-        config=Config(
-            connect_timeout=_CONNECT_TIMEOUT_SECONDS,
-            read_timeout=_READ_TIMEOUT_SECONDS,
-            retries={"max_attempts": _MAX_ATTEMPTS, "mode": "standard"},
-        ),
-    )
+    global _BEDROCK_CLIENT
+    if _BEDROCK_CLIENT is None:
+        logger.info(
+            "Initialising Bedrock client (connect_timeout=%ss, read_timeout=%ss, max_attempts=%d)",
+            _CONNECT_TIMEOUT_SECONDS,
+            _READ_TIMEOUT_SECONDS,
+            _MAX_ATTEMPTS,
+        )
+        _BEDROCK_CLIENT = boto3.client(
+            "bedrock-runtime",
+            region_name=os.environ.get("AWS_REGION", "us-east-1"),
+            config=Config(
+                connect_timeout=_CONNECT_TIMEOUT_SECONDS,
+                read_timeout=_READ_TIMEOUT_SECONDS,
+                retries={"max_attempts": _MAX_ATTEMPTS, "mode": "standard"},
+            ),
+        )
+    return _BEDROCK_CLIENT
 
 
 def _entry_to_dict(entry: EndpointEntry) -> dict:
@@ -198,15 +220,10 @@ def _enrich_batch(
     return by_operation_id
 
 
-def enrich_endpoints(entries: list[EndpointEntry]) -> list[EndpointEntry]:
-    """Enrich all entries in batches of up to _BATCH_SIZE.
-
-    Enrichment failures for any batch are logged and skipped — the original
-    entry is kept unchanged so the catalog write always succeeds.
-    """
-    if not entries:
-        return entries
-
+def _run_enrichment_loop(
+    entries: list[EndpointEntry],
+) -> list[EndpointEntry]:
+    """Inner enrichment loop — runs inside a thread so we can time-bound it."""
     api_title = entries[0].api_title
     all_op_ids = [e.operation_id for e in entries]
     enriched_map: dict[str, dict] = {}
@@ -262,3 +279,45 @@ def enrich_endpoints(entries: list[EndpointEntry]) -> list[EndpointEntry]:
         )
 
     return result
+
+
+def enrich_endpoints(entries: list[EndpointEntry]) -> list[EndpointEntry]:
+    """Enrich all entries in batches of up to _BATCH_SIZE.
+
+    Enrichment is executed in a background thread and bounded by
+    _TOTAL_ENRICHMENT_TIMEOUT_SECONDS.  If the deadline is exceeded (e.g.
+    because Bedrock is unresponsive and boto3 timeouts are not kicking in),
+    the function logs a warning and returns the original unenriched entries so
+    the catalog write always succeeds and the Lambda never silently hangs.
+
+    Batch-level failures are also caught individually — the original entry is
+    kept unchanged for any batch that errors.
+    """
+    if not entries:
+        return entries
+
+    logger.info(
+        "Submitting enrichment of %d endpoints (hard_timeout=%ss)",
+        len(entries),
+        _TOTAL_ENRICHMENT_TIMEOUT_SECONDS,
+    )
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_run_enrichment_loop, entries)
+        try:
+            return future.result(timeout=_TOTAL_ENRICHMENT_TIMEOUT_SECONDS)
+        except concurrent.futures.TimeoutError:
+            logger.warning(
+                "Endpoint enrichment exceeded hard timeout of %ds — "
+                "returning %d unenriched entries so catalog write can proceed",
+                _TOTAL_ENRICHMENT_TIMEOUT_SECONDS,
+                len(entries),
+            )
+            return entries
+        except Exception:
+            logger.warning(
+                "Endpoint enrichment raised an unexpected error — "
+                "returning %d unenriched entries",
+                len(entries),
+                exc_info=True,
+            )
+            return entries
