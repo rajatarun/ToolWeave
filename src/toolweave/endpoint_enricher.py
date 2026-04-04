@@ -121,11 +121,22 @@ def _enrich_batch(
         + json.dumps([_entry_to_dict(e) for e in entries], indent=2)
     )
 
+    logger.info(
+        "Calling Bedrock enricher for batch_size=%d (first_operation_id=%r)",
+        len(entries),
+        entries[0].operation_id if entries else None,
+    )
+
     response = _client().converse(
         modelId=_ENRICHER_MODEL_ID,
         system=[{"text": _SYSTEM_PROMPT}],
         messages=[{"role": "user", "content": [{"text": user_msg}]}],
         inferenceConfig={"maxTokens": 4096, "temperature": 0},
+    )
+
+    logger.info(
+        "Received Bedrock enricher response for batch_size=%d",
+        len(entries),
     )
 
     content_blocks = response["output"]["message"].get("content", [])
@@ -139,6 +150,10 @@ def _enrich_batch(
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
 
+    logger.info(
+        "Parsing Bedrock enricher JSON payload for batch_size=%d",
+        len(entries),
+    )
     parsed: Any = json.loads(raw)
     if isinstance(parsed, dict):
         # Some model runs wrap the list under an object key.
@@ -160,6 +175,11 @@ def _enrich_batch(
         normalized = dict(item)
         normalized["operation_id"] = op_id
         by_operation_id[str(op_id)] = normalized
+    logger.info(
+        "Mapped Bedrock enrichment output to %d operation_id values (batch_size=%d)",
+        len(by_operation_id),
+        len(entries),
+    )
     return by_operation_id
 
 
@@ -175,6 +195,12 @@ def enrich_endpoints(entries: list[EndpointEntry]) -> list[EndpointEntry]:
     api_title = entries[0].api_title
     all_op_ids = [e.operation_id for e in entries]
     enriched_map: dict[str, dict] = {}
+
+    logger.info(
+        "Starting enrichment across %d endpoints with batch_size=%d",
+        len(entries),
+        _BATCH_SIZE,
+    )
 
     for i in range(0, len(entries), _BATCH_SIZE):
         batch = entries[i : i + _BATCH_SIZE]
