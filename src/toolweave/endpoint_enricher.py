@@ -31,7 +31,7 @@ _ENRICHER_MODEL_ID = os.environ.get(
     "anthropic.claude-3-haiku-20240307-v1:0",
 )
 _CONNECT_TIMEOUT_SECONDS = int(os.environ.get("ENRICHER_CONNECT_TIMEOUT_SECONDS", "5"))
-_READ_TIMEOUT_SECONDS = int(os.environ.get("ENRICHER_READ_TIMEOUT_SECONDS", "45"))
+_READ_TIMEOUT_SECONDS = int(os.environ.get("ENRICHER_READ_TIMEOUT_SECONDS", "20"))
 _MAX_ATTEMPTS = int(os.environ.get("ENRICHER_MAX_ATTEMPTS", "2"))
 # Hard wall-clock limit per individual endpoint enrichment call.
 _PER_ENDPOINT_TIMEOUT_SECONDS = int(
