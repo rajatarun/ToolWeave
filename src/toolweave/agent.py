@@ -40,9 +40,28 @@ BEDROCK_MODEL_ID = os.environ.get(
     "BEDROCK_MODEL_ID",
     "anthropic.claude-3-haiku-20240307-v1:0",
 )
-_LOG_CONVERSE_MESSAGES = os.environ.get("TOOLWEAVE_LOG_CONVERSE_MESSAGES", "false").lower() == "true"
-_LOG_CONVERSE_RAW_RESPONSES = os.environ.get("TOOLWEAVE_LOG_CONVERSE_RAW_RESPONSES", "false").lower() == "true"
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+_LOG_CONVERSE_MESSAGES = _env_flag("TOOLWEAVE_LOG_CONVERSE_MESSAGES", default=False)
+_LOG_CONVERSE_RAW_RESPONSES = _env_flag(
+    "TOOLWEAVE_LOG_CONVERSE_RAW_RESPONSES",
+    default=False,
+)
 _LOG_PREVIEW_CHARS = int(os.environ.get("TOOLWEAVE_LOG_PREVIEW_CHARS", "4000"))
+
+logger.info(
+    "Agent logging config converse_messages=%s raw_responses=%s preview_chars=%s",
+    _LOG_CONVERSE_MESSAGES,
+    _LOG_CONVERSE_RAW_RESPONSES,
+    _LOG_PREVIEW_CHARS,
+)
 
 # ---------------------------------------------------------------------------
 # Session store (in-memory; warm-container lifetime)
