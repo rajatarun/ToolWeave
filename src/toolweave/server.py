@@ -74,6 +74,7 @@ async def pre_tool(
         PreToolResponse as a dict. Pass the whole dict to post_tool when status=='ready'.
     """
     sid = session_id or str(uuid.uuid4())
+    logger.info("pre_tool invoked session_id=%s", sid)
 
     async with observatory.track_invocation("pre_tool", {"prompt": prompt[:200], "session_id": sid}):
         if not _catalog:
@@ -87,6 +88,12 @@ async def pre_tool(
             ).model_dump()
 
         response = await agent.run_agent(prompt, sid, _catalog, _dd_context)
+        logger.info(
+            "pre_tool completed session_id=%s status=%s execution_type=%s",
+            sid,
+            response.status,
+            response.execution_type,
+        )
 
         if response.status == "ready" and not response.execution_type:
             response.execution_type = (
