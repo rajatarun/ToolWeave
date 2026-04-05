@@ -193,6 +193,8 @@ async def run_agent(
     Maintains conversation history in _sessions[session_id].
     Returns a PreToolResponse with status 'ready', 'needs_input', 'no_match', or 'error'.
     """
+    logger.info("Agent run started session_id=%s", session_id)
+
     # Restore or create conversation history
     history: list[dict[str, Any]] = _sessions.get(session_id, [])
     history.append({"role": "user", "content": [{"text": user_message}]})
@@ -217,6 +219,11 @@ async def run_agent(
                 None, lambda kw=converse_kwargs: _bedrock.converse(**kw)
             )
         except Exception as exc:
+            logger.exception(
+                "Agent Bedrock converse failed session_id=%s iteration=%s",
+                session_id,
+                _iteration,
+            )
             _sessions[session_id] = history
             return PreToolResponse(
                 session_id=session_id,
@@ -290,6 +297,12 @@ async def run_agent(
             # If finalize_plan was called, return the result immediately
             if _finalized:
                 _sessions[session_id] = history
+                logger.info(
+                    "Agent finalized plan session_id=%s status=%s operation_id=%s",
+                    session_id,
+                    _finalized[0].status,
+                    _finalized[0].operation_id,
+                )
                 return _finalized[0]
 
         else:
@@ -321,6 +334,11 @@ async def _dispatch_tool(
     dd_context: str,
     finalized: list[PreToolResponse],
 ) -> Any:
+    logger.info(
+        "Agent tool invoked tool=%s input_keys=%s",
+        tool_name,
+        sorted(tool_input.keys()),
+    )
     if tool_name == "search_endpoints":
         return _tool_search_endpoints(tool_input.get("query", ""), catalog)
 
