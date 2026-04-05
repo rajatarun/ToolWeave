@@ -29,14 +29,35 @@ async def _call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
             "arguments": arguments,
         },
     }
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            _MCP_ENDPOINT,
-            json=payload,
-            headers={"Content-Type": "application/json"},
-        )
-        resp.raise_for_status()
-        body = resp.json()
+    headers = {
+        "Content-Type": "application/json",
+        # Some MCP servers are strict about Accept negotiation for JSON-RPC.
+        "Accept": "application/json, text/event-stream",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                _MCP_ENDPOINT,
+                json=payload,
+                headers=headers,
+            )
+            resp.raise_for_status()
+            body = resp.json()
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        text = exc.response.text
+        return {
+            "error": f"DataDictionary tool call failed ({status})",
+            "details": text[:500],
+            "tool_name": tool_name,
+        }
+    except httpx.HTTPError as exc:
+        return {
+            "error": "DataDictionary tool call failed",
+            "details": str(exc),
+            "tool_name": tool_name,
+        }
 
     # MCP response: {"result": {"content": [{"type": "text", "text": "..."}]}}
     result = body.get("result", {})
