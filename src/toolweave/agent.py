@@ -270,12 +270,26 @@ async def run_agent(
             tool_results: list[dict[str, Any]] = []
 
             for block in assistant_msg.get("content", []):
-                if block.get("type") != "toolUse":
+                # Bedrock tool blocks are typically shaped as:
+                # {"type":"toolUse","name":...,"input":...,"toolUseId":...}
+                # Some SDK responses instead return:
+                # {"toolUse":{"name":...,"input":...,"toolUseId":...}}
+                # Normalize both formats so tool calls are never skipped.
+                tool_block = (
+                    block.get("toolUse")
+                    if isinstance(block, dict) and "toolUse" in block
+                    else block
+                )
+                if not isinstance(tool_block, dict) or (
+                    block.get("type") not in (None, "toolUse")
+                ):
                     continue
 
-                tool_name: str = block["name"]
-                tool_input: dict[str, Any] = block.get("input", {})
-                tool_use_id: str = block["toolUseId"]
+                tool_name = tool_block.get("name")
+                tool_use_id = tool_block.get("toolUseId")
+                if not tool_name or not tool_use_id:
+                    continue
+                tool_input: dict[str, Any] = tool_block.get("input", {})
 
                 result_content = await _dispatch_tool(
                     tool_name, tool_input, catalog, dd_context, _finalized
