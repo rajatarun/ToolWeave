@@ -15,6 +15,7 @@ the user ONE follow-up question (multi-turn, keyed by session_id).
 
 import asyncio
 import json
+import logging
 import os
 import re
 from typing import Any
@@ -23,6 +24,8 @@ import boto3
 
 from . import catalog_search, data_dictionary_client
 from .models import EndpointEntry, FieldMapping, PreToolResponse
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Bedrock client (module-level; boto3 is thread-safe for separate clients)
@@ -36,6 +39,9 @@ BEDROCK_MODEL_ID = os.environ.get(
     "BEDROCK_MODEL_ID",
     "anthropic.claude-3-haiku-20240307-v1:0",
 )
+_LOG_CONVERSE_MESSAGES = os.environ.get("TOOLWEAVE_LOG_CONVERSE_MESSAGES", "false").lower() == "true"
+_LOG_CONVERSE_RAW_RESPONSES = os.environ.get("TOOLWEAVE_LOG_CONVERSE_RAW_RESPONSES", "false").lower() == "true"
+_LOG_PREVIEW_CHARS = int(os.environ.get("TOOLWEAVE_LOG_PREVIEW_CHARS", "4000"))
 
 # ---------------------------------------------------------------------------
 # Session store (in-memory; warm-container lifetime)
@@ -203,6 +209,7 @@ async def run_agent(
             "toolConfig": {"tools": AGENT_TOOLS},
             "inferenceConfig": {"maxTokens": 2048, "temperature": 0.0},
         }
+        _log_converse_request(session_id, _iteration, history)
 
         try:
             response = await loop.run_in_executor(
@@ -215,6 +222,7 @@ async def run_agent(
                 status="error",
                 error=f"Bedrock error: {exc}",
             )
+        _log_converse_response(session_id, _iteration, response)
 
         assistant_msg = response["output"]["message"]
         stop_reason = response["stopReason"]
@@ -461,3 +469,41 @@ def _extract_text(message: dict[str, Any]) -> str:
         if block.get("type") == "text":
             return block["text"]
     return ""
+
+
+def _preview_json(value: Any) -> str:
+    text = json.dumps(value, default=str)
+    if len(text) > _LOG_PREVIEW_CHARS:
+        return f"{text[:_LOG_PREVIEW_CHARS]}... (truncated)"
+    return text
+
+
+def _log_converse_request(session_id: str, iteration: int, history: list[dict[str, Any]]) -> None:
+    if not _LOG_CONVERSE_MESSAGES:
+        return
+    logger.info(
+        "Agent converse request session_id=%s iteration=%s history=%s",
+        session_id,
+        iteration,
+        _preview_json(history),
+    )
+
+
+def _log_converse_response(session_id: str, iteration: int, response: dict[str, Any]) -> None:
+    stop_reason = response.get("stopReason", "unknown")
+    if _LOG_CONVERSE_MESSAGES:
+        assistant_msg = response.get("output", {}).get("message", {})
+        logger.info(
+            "Agent converse response session_id=%s iteration=%s stop_reason=%s message=%s",
+            session_id,
+            iteration,
+            stop_reason,
+            _preview_json(assistant_msg),
+        )
+    if _LOG_CONVERSE_RAW_RESPONSES:
+        logger.info(
+            "Agent converse raw response session_id=%s iteration=%s response=%s",
+            session_id,
+            iteration,
+            _preview_json(response),
+        )
