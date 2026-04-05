@@ -254,6 +254,28 @@ async def run_agent(
                     }
                 )
 
+            # Bedrock requires each message to include at least one ContentBlock.
+            # In rare cases a model can return stopReason=tool_use without any
+            # toolUse blocks, which would make tool_results empty and cause the
+            # next converse call to fail validation.
+            if not tool_results:
+                _sessions[session_id] = history
+                text = _extract_text(assistant_msg)
+                if text:
+                    return PreToolResponse(
+                        session_id=session_id,
+                        status="needs_input",
+                        question=text,
+                    )
+                return PreToolResponse(
+                    session_id=session_id,
+                    status="error",
+                    error=(
+                        "Model returned stopReason=tool_use without any tool requests; "
+                        "unable to continue safely."
+                    ),
+                )
+
             history.append({"role": "user", "content": tool_results})
 
             # If finalize_plan was called, return the result immediately
