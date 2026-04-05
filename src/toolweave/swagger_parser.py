@@ -10,6 +10,8 @@ import yaml
 
 from .models import EndpointEntry, EndpointParameter, RequestBodyField
 
+_EXTERNAL_API_AUTH_HEADER = {"Authorization": "Bearer 123"}
+
 # ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------
@@ -25,7 +27,7 @@ def load_spec_from_bytes(content: bytes, filename: str = "") -> dict[str, Any]:
 
 async def load_spec_from_url(url: str) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(url)
+        resp = await client.get(url, headers=_EXTERNAL_API_AUTH_HEADER)
         resp.raise_for_status()
         return load_spec_from_bytes(resp.content, url)
 
