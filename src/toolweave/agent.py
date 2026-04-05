@@ -275,14 +275,15 @@ async def run_agent(
                 # Some SDK responses instead return:
                 # {"toolUse":{"name":...,"input":...,"toolUseId":...}}
                 # Normalize both formats so tool calls are never skipped.
+                block_type = block.get("type") if isinstance(block, dict) else None
+                if block_type not in (None, "toolUse"):
+                    continue
                 tool_block = (
                     block.get("toolUse")
                     if isinstance(block, dict) and "toolUse" in block
                     else block
                 )
-                if not isinstance(tool_block, dict) or (
-                    block.get("type") not in (None, "toolUse")
-                ):
+                if not isinstance(tool_block, dict):
                     continue
 
                 tool_name = tool_block.get("name")
@@ -297,9 +298,10 @@ async def run_agent(
 
                 tool_results.append(
                     {
-                        "type": "toolResult",
-                        "toolUseId": tool_use_id,
-                        "content": [{"text": json.dumps(result_content, default=str)}],
+                        "toolResult": {
+                            "toolUseId": tool_use_id,
+                            "content": [{"text": json.dumps(result_content, default=str)}],
+                        }
                     }
                 )
 
@@ -518,7 +520,11 @@ def _tool_finalize_plan(
 
 def _extract_text(message: dict[str, Any]) -> str:
     for block in message.get("content", []):
-        if block.get("type") == "text":
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text" and "text" in block:
+            return block["text"]
+        if "text" in block and block.get("type") is None:
             return block["text"]
     return ""
 
