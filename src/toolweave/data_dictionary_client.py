@@ -16,6 +16,7 @@ DATA_DICTIONARY_URL = os.environ.get(
 # MCP endpoint — the DataDictionary Lambda uses stateless_http=True so every
 # POST to /mcp is a self-contained request/response session.
 _MCP_ENDPOINT = DATA_DICTIONARY_URL.rstrip("/") + "/mcp"
+_EXTERNAL_API_AUTH_HEADER = {"Authorization": "Bearer 123"}
 
 
 async def _call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
@@ -33,6 +34,7 @@ async def _call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
         "Content-Type": "application/json",
         # Some MCP servers are strict about Accept negotiation for JSON-RPC.
         "Accept": "application/json, text/event-stream",
+        **_EXTERNAL_API_AUTH_HEADER,
     }
 
     try:

@@ -8,6 +8,8 @@ import httpx
 
 from .models import ImmediateExecutionResult
 
+_EXTERNAL_API_AUTH_HEADER = {"Authorization": "Bearer 123"}
+
 
 async def execute_get(
     base_url: str,
@@ -51,9 +53,13 @@ async def _request(
     start = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
+            merged_headers = {
+                **_EXTERNAL_API_AUTH_HEADER,
+                **(headers or {}),
+            }
             kwargs: dict[str, Any] = {
                 "params": query_params or {},
-                "headers": headers or {},
+                "headers": merged_headers,
             }
             if body is not None:
                 kwargs["json"] = body
