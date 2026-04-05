@@ -26,6 +26,7 @@ from . import catalog_search, data_dictionary_client
 from .models import EndpointEntry, FieldMapping, PreToolResponse
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # ---------------------------------------------------------------------------
 # Bedrock client (module-level; boto3 is thread-safe for separate clients)
