@@ -1,0 +1,75 @@
+@startuml C4-Component-ToolWeave
+' C4 Level 3 – Component Diagram
+' Focus: ToolWeave Lambda (server.py and supporting modules)
+
+title ToolWeave — C4 Level 3: Components (ToolWeave Lambda)
+
+top to bottom direction
+
+!include ./assets/C4Component.puml
+
+' ── External Callers ─────────────────────────────────────────────────────────
+Person(mcp_client, "MCP Client", "Claude Desktop or custom app\ncalling MCP tools over HTTPS")
+
+Container_Ext(apigw, "API Gateway HTTP API", "AWS API Gateway v2", "Routes HTTPS requests\nto the Lambda function")
+
+' ── ToolWeave Lambda Boundary ────────────────────────────────────────────────
+Container_Boundary(toolweave_fn, "ToolWeave Lambda  |  Python 3.12 / FastMCP") {
+
+    Component(mangum, "Mangum ASGI Adapter", "mangum 0.19+", "Converts API Gateway HTTP\nproxy events into ASGI\nrequests for FastMCP")
+
+    Component(server, "MCP Server (server.py)", "FastMCP 2.3+", "Defines and registers 4 MCP\ntools. Manages cold-start\ncatalog loading. Dispatches\ncalls to agent, executor,\nobservatory, and DynamoDB.")
+
+    Component(agent, "Bedrock Agent (agent.py)", "boto3 / Bedrock Converse", "Multi-turn agent loop.\nMaintains session history.\nUses 4 internal tools to search\ncatalog, inspect endpoints,\nlookup field metadata, and\nfinalize the API call plan.")
+
+    Component(catalog_search, "Catalog Search (catalog_search.py)", "Pure Python", "Keyword + partial-match scoring\nover in-memory EndpointEntry\nlist. Returns top-k candidates.")
+
+    Component(executor, "HTTP Executor (executor.py)", "httpx (async)", "Executes GET (immediate) and\nwrite (POST/PUT/PATCH/DELETE)\noperations against target APIs\nwith timeout and error handling.")
+
+    Component(observatory, "Observatory (observatory.py)", "mcp-observatory library", "Creates proposals with HMAC\ncommit tokens. Risk-scores\nwrite operations. Verifies\ntokens on commit. Tracks\ninvocation metrics.")
+
+    Component(dynamodb_client, "DynamoDB Client (dynamodb_client.py)", "boto3 / DynamoDB", "CRUD for ApiCatalog, ApiMeta,\nand Proposals tables. Handles\nserialization, batch writes,\nand TTL-based proposals.")
+
+    Component(dd_client, "DataDictionary Client\n(data_dictionary_client.py)", "httpx / JSON-RPC 2.0", "3-pass field metadata lookup:\nexact name → search → context\nbulk fetch. Graceful degradation\non timeout or HTTP error.")
+
+    Component(models, "Data Models (models.py)", "Pydantic 2.7+", "EndpointEntry, PreToolResponse,\nProposalResult, CommitResult,\nImmediateExecutionResult,\nFieldMapping, DataElementMeta")
+
+}
+
+' ── External Dependencies ─────────────────────────────────────────────────────
+Container_Ext(bedrock_ext, "Amazon Bedrock", "Claude 3 Haiku\nConverse API", "Processes agent tool-use\nloop and returns structured\nfinalize_plan responses")
+
+Container_Ext(dd_lambda, "DataDictionary Lambda", "FastMCP / HTTP", "Returns field-level metadata\n(meaning, dataType, constraints,\nexamples) via JSON-RPC")
+
+ContainerDb(catalog_db, "ApiCatalog Table", "DynamoDB", "Persisted endpoint entries\nwith enrichment data")
+
+ContainerDb(proposals_db, "Proposals Table", "DynamoDB", "Write proposal storage\nwith 1-hour TTL")
+
+Container_Ext(target_api_ext, "Target REST APIs", "HTTPS", "External services executed\non behalf of the caller")
+
+' ── Relationships: Entry ─────────────────────────────────────────────────────
+Rel_D(mcp_client, apigw, "MCP tool call", "HTTPS / JSON")
+Rel_D(apigw, mangum, "Lambda Proxy Event", "AWS Lambda Invoke")
+Rel_D(mangum, server, "ASGI request", "In-process")
+
+' ── Relationships: pre_tool flow ─────────────────────────────────────────────
+Rel_D(server, agent, "pre_tool: delegates\nprompt + session_id", "Async / in-process")
+Rel_R(agent, catalog_search, "search_endpoints(query)", "In-process")
+Rel_D(agent, dd_client, "lookup_field_metadata\n(field_names, context)", "In-process")
+Rel_D(dd_client, dd_lambda, "JSON-RPC: get_data_element\nsearch_data_elements", "HTTP / HTTPS")
+Rel_D(agent, bedrock_ext, "Converse API: tool-use loop\n(up to 20 iterations)", "AWS SDK")
+Rel(agent, models, "Builds PreToolResponse", "In-process")
+
+' ── Relationships: post_tool flow ────────────────────────────────────────────
+Rel(server, executor, "post_tool (GET): execute\nimmediate HTTP call", "Async / in-process")
+Rel(server, observatory, "post_tool (write): propose()\nrisk score + HMAC token", "In-process")
+Rel(observatory, proposals_db, "save_proposal (DynamoDB TTL)", "AWS SDK")
+Rel(executor, target_api_ext, "HTTP GET / write request", "httpx / HTTPS")
+
+' ── Relationships: commit flow ───────────────────────────────────────────────
+Rel(server, dynamodb_client, "commit_api_call:\nget_proposal_data", "In-process")
+Rel(server, observatory, "commit_api_call:\nverify(proposal_id, token)", "In-process")
+Rel(dynamodb_client, catalog_db, "load_full_catalog\nwrite_endpoint_batch\ndelete_api_entries", "AWS SDK")
+Rel(dynamodb_client, proposals_db, "get_proposal_data", "AWS SDK")
+
+@enduml

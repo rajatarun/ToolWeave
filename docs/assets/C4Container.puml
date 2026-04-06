@@ -1,0 +1,25 @@
+' C4 Model - Container Diagram Macros
+' Local copy — no external URL dependencies
+' Based on C4-PlantUML (https://github.com/plantuml-stdlib/C4-PlantUML)
+
+!include ./C4Context.puml
+
+' ── Container ───────────────────────────────────────────────────────────────
+!define Container(alias, label, technology, descr) \
+    rectangle "==label\n\n<size:10>[technology]</size>\n\n<i>descr</i>" <<container>> as alias
+
+!define Container_Ext(alias, label, technology, descr) \
+    rectangle "==label\n\n<size:10>[technology]</size>\n\n<i>descr</i>" <<external_container>> as alias
+
+!define ContainerDb(alias, label, technology, descr) \
+    database "==label\n\n<size:10>[technology]</size>\n\n<i>descr</i>" <<container_db>> as alias
+
+!define ContainerDb_Ext(alias, label, technology, descr) \
+    database "==label\n\n<size:10>[technology]</size>\n\n<i>descr</i>" <<external_container>> as alias
+
+!define ContainerQueue(alias, label, technology, descr) \
+    queue "==label\n\n<size:10>[technology]</size>\n\n<i>descr</i>" <<container_queue>> as alias
+
+' ── Container Boundary (open – close with '}' in the diagram) ──────────────
+!define Container_Boundary(alias, label) \
+    rectangle "label" <<boundary>> as alias {
