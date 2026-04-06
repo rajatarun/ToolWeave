@@ -1,0 +1,103 @@
+' C4 Model - Base Styles and Skinparams
+' Local copy - no external URL dependencies
+
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 12
+skinparam defaultTextAlignment center
+skinparam wrapWidth 200
+skinparam maxMessageSize 400
+skinparam Nodesep 10
+skinparam Ranksep 30
+
+skinparam arrow {
+    Color #666666
+    FontColor #666666
+    FontSize 12
+}
+
+skinparam rectangle<<person>> {
+    BackgroundColor #08427b
+    BorderColor #073b6f
+    FontColor #ffffff
+    BorderThickness 2
+    RoundCorner 8
+}
+skinparam rectangle<<external_person>> {
+    BackgroundColor #686868
+    BorderColor #8a8a8a
+    FontColor #ffffff
+    BorderThickness 2
+    RoundCorner 8
+}
+skinparam rectangle<<system>> {
+    BackgroundColor #1168bd
+    BorderColor #3c7fc0
+    FontColor #ffffff
+    BorderThickness 2
+    RoundCorner 8
+}
+skinparam rectangle<<external_system>> {
+    BackgroundColor #999999
+    BorderColor #8a8a8a
+    FontColor #ffffff
+    BorderThickness 2
+    RoundCorner 8
+}
+skinparam database<<system_db>> {
+    BackgroundColor #1168bd
+    BorderColor #3c7fc0
+    FontColor #ffffff
+    BorderThickness 2
+}
+skinparam database<<external_system_db>> {
+    BackgroundColor #999999
+    BorderColor #8a8a8a
+    FontColor #ffffff
+    BorderThickness 2
+}
+skinparam rectangle<<container>> {
+    BackgroundColor #438dd5
+    BorderColor #3c7fc0
+    FontColor #ffffff
+    BorderThickness 2
+    RoundCorner 8
+}
+skinparam rectangle<<external_container>> {
+    BackgroundColor #b3b3b3
+    BorderColor #a0a0a0
+    FontColor #ffffff
+    BorderThickness 2
+    RoundCorner 8
+}
+skinparam database<<container_db>> {
+    BackgroundColor #438dd5
+    BorderColor #3c7fc0
+    FontColor #ffffff
+    BorderThickness 2
+}
+skinparam queue<<container_queue>> {
+    BackgroundColor #438dd5
+    BorderColor #3c7fc0
+    FontColor #ffffff
+    BorderThickness 2
+}
+skinparam rectangle<<component>> {
+    BackgroundColor #85bbf0
+    BorderColor #78a8d8
+    FontColor #000000
+    BorderThickness 2
+    RoundCorner 8
+}
+skinparam database<<component_db>> {
+    BackgroundColor #85bbf0
+    BorderColor #78a8d8
+    FontColor #000000
+    BorderThickness 2
+}
+skinparam rectangle<<boundary>> {
+    BackgroundColor transparent
+    BorderColor #444444
+    FontColor #444444
+    BorderThickness 1
+    RoundCorner 8
+}

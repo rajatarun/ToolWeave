@@ -1,0 +1,15 @@
+' C4 Model - Component Diagram Macros
+' Local copy — no external URL dependencies
+' Based on C4-PlantUML (https://github.com/plantuml-stdlib/C4-PlantUML)
+
+!include ./C4Container.puml
+
+' ── Component ───────────────────────────────────────────────────────────────
+!define Component(alias, label, technology, descr) \
+    rectangle "==label\n\n<size:10>[technology]</size>\n\n<i>descr</i>" <<component>> as alias
+
+!define ComponentDb(alias, label, technology, descr) \
+    database "==label\n\n<size:10>[technology]</size>\n\n<i>descr</i>" <<component_db>> as alias
+
+!define ComponentQueue(alias, label, technology, descr) \
+    queue "==label\n\n<size:10>[technology]</size>\n\n<i>descr</i>" <<component>> as alias

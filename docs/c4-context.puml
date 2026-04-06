@@ -1,0 +1,36 @@
+@startuml C4-Context-ToolWeave
+' C4 Level 1 - System Context Diagram
+' ToolWeave: NL-to-REST API bridge via MCP
+
+title ToolWeave - C4 Level 1: System Context
+
+top to bottom direction
+
+!include ./assets/C4.puml
+
+' ── Actors ───────────────────────────────────────────────────────────────────
+rectangle "==Developer / MCP Client\n\n<size:10>[Person]</size>\n\n<i>Uses an MCP-compatible\nclient (Claude Desktop, app)\nto issue natural-language\nAPI requests</i>" <<person>> as developer
+
+rectangle "==API Owner\n\n<size:10>[Person]</size>\n\n<i>Uploads OpenAPI/Swagger\nspecs to bootstrap\nthe API catalog</i>" <<person>> as api_owner
+
+' ── Internal System ──────────────────────────────────────────────────────────
+rectangle "==ToolWeave\n\n<size:10>[Software System]</size>\n\n<i>FastMCP server that\ntranslates natural-language\nprompts into REST API calls\nwith proposal gating\nfor write operations</i>" <<system>> as toolweave
+
+' ── External Systems ─────────────────────────────────────────────────────────
+rectangle "==Target REST APIs\n\n<size:10>[External Software System]</size>\n\n<i>Customer / partner REST\nservices that ToolWeave\nexecutes on behalf\nof the caller</i>" <<external_system>> as target_api
+
+rectangle "==Amazon Bedrock\n\n<size:10>[External Software System]</size>\n\n<i>Claude 3 Haiku via\nConverse API for AI\nplanning and endpoint\nenrichment</i>" <<external_system>> as bedrock
+
+rectangle "==DataDictionary MCP\n\n<size:10>[External Software System]</size>\n\n<i>Shared Lambda service\nthat provides field-level\nmetadata (format, constraints)</i>" <<external_system>> as data_dictionary
+
+rectangle "==mcp-observatory\n\n<size:10>[External Software System]</size>\n\n<i>Risk scoring, HMAC\nproposal / commit tokens\nand invocation metrics</i>" <<external_system>> as observatory
+
+' ── Relationships ────────────────────────────────────────────────────────────
+developer --> toolweave : "Calls MCP tools\n[MCP over HTTPS]"
+api_owner --> toolweave : "Uploads OpenAPI spec\ntriggers catalog ingestion\n[AWS Console / CLI]"
+toolweave --> target_api : "Executes REST calls\non behalf of developer\n[HTTPS / JSON]"
+toolweave --> bedrock : "AI planning\nand enrichment\n[AWS SDK / Converse API]"
+toolweave --> data_dictionary : "Fetches field metadata\n[HTTP JSON-RPC]"
+toolweave --> observatory : "Risk scoring, proposal\nand commit gating\n[Library in-process]"
+
+@enduml

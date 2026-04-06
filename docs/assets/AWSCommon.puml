@@ -1,0 +1,104 @@
+' AWS Architecture - Common Styles
+' Local copy - no external URL dependencies
+
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 12
+skinparam defaultTextAlignment center
+skinparam wrapWidth 200
+
+skinparam arrow {
+    Color #666666
+    FontColor #555555
+    FontSize 11
+}
+
+skinparam rectangle<<lambda>> {
+    BackgroundColor #FF9900
+    BorderColor #E88B00
+    FontColor #ffffff
+    BorderThickness 2
+    RoundCorner 8
+}
+skinparam rectangle<<apigw>> {
+    BackgroundColor #A166FF
+    BorderColor #8A50E0
+    FontColor #ffffff
+    BorderThickness 2
+    RoundCorner 8
+}
+skinparam rectangle<<s3>> {
+    BackgroundColor #3F8624
+    BorderColor #2F6B18
+    FontColor #ffffff
+    BorderThickness 2
+    RoundCorner 8
+}
+skinparam database<<dynamodb>> {
+    BackgroundColor #4053D6
+    BorderColor #2E3FAD
+    FontColor #ffffff
+    BorderThickness 2
+}
+skinparam rectangle<<eventbridge>> {
+    BackgroundColor #E7157B
+    BorderColor #C0116A
+    FontColor #ffffff
+    BorderThickness 2
+    RoundCorner 8
+}
+skinparam rectangle<<bedrock>> {
+    BackgroundColor #01A88D
+    BorderColor #008070
+    FontColor #ffffff
+    BorderThickness 2
+    RoundCorner 8
+}
+skinparam rectangle<<iam>> {
+    BackgroundColor #DD344C
+    BorderColor #B82A3E
+    FontColor #ffffff
+    BorderThickness 2
+    RoundCorner 8
+}
+skinparam rectangle<<vpc>> {
+    BackgroundColor transparent
+    BorderColor #8C4FFF
+    FontColor #8C4FFF
+    BorderThickness 2
+    RoundCorner 10
+}
+skinparam rectangle<<aws_account>> {
+    BackgroundColor transparent
+    BorderColor #232F3E
+    FontColor #232F3E
+    BorderThickness 2
+    RoundCorner 10
+}
+skinparam rectangle<<aws_region>> {
+    BackgroundColor transparent
+    BorderColor #FF9900
+    FontColor #FF9900
+    BorderThickness 2
+    RoundCorner 10
+}
+skinparam rectangle<<external>> {
+    BackgroundColor #999999
+    BorderColor #888888
+    FontColor #ffffff
+    BorderThickness 2
+    RoundCorner 8
+}
+skinparam rectangle<<user>> {
+    BackgroundColor #08427b
+    BorderColor #073b6f
+    FontColor #ffffff
+    BorderThickness 2
+    RoundCorner 8
+}
+skinparam rectangle<<github>> {
+    BackgroundColor #24292E
+    BorderColor #1B1F23
+    FontColor #ffffff
+    BorderThickness 2
+    RoundCorner 8
+}
