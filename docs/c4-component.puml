@@ -1,0 +1,70 @@
+@startuml C4-Component-ToolWeave
+' C4 Level 3 - Component Diagram
+' Focus: ToolWeave Lambda internals
+
+title ToolWeave - C4 Level 3: Components (ToolWeave Lambda)
+
+top to bottom direction
+
+!include ./assets/C4.puml
+
+' ── External Callers ─────────────────────────────────────────────────────────
+rectangle "==MCP Client\n\n<size:10>[Person]</size>\n\n<i>Claude Desktop or custom\napp calling MCP tools</i>" <<person>> as mcp_client
+
+rectangle "==API Gateway HTTP API\n\n<size:10>[AWS API Gateway v2]</size>\n\n<i>Routes HTTPS requests\nto the Lambda function</i>" <<external_container>> as apigw
+
+' ── ToolWeave Lambda ─────────────────────────────────────────────────────────
+rectangle "ToolWeave Lambda  |  Python 3.12 / FastMCP" <<boundary>> {
+
+    rectangle "==Mangum ASGI Adapter\n\n<size:10>[mangum 0.19+]</size>\n\n<i>Converts API Gateway\nproxy events to ASGI\nrequests for FastMCP</i>" <<component>> as mangum
+
+    rectangle "==MCP Server\n(server.py)\n\n<size:10>[FastMCP 2.3+]</size>\n\n<i>Registers 4 MCP tools.\nManages cold-start catalog.\nDispatches to agent,\nexecutor, observatory,\nDynamoDB client.</i>" <<component>> as server
+
+    rectangle "==Bedrock Agent\n(agent.py)\n\n<size:10>[boto3 / Bedrock Converse]</size>\n\n<i>Multi-turn agent loop.\nMaintains session history.\nUses 4 internal tools to\nsearch catalog, inspect\nendpoints, lookup field\nmetadata, finalize plan.</i>" <<component>> as agent
+
+    rectangle "==Catalog Search\n(catalog_search.py)\n\n<size:10>[Pure Python]</size>\n\n<i>Keyword + partial-match\nscoring over in-memory\nEndpointEntry list.\nReturns top-k results.</i>" <<component>> as catalog_search
+
+    rectangle "==HTTP Executor\n(executor.py)\n\n<size:10>[httpx async]</size>\n\n<i>Executes GET (immediate)\nand write operations\nagainst target APIs.</i>" <<component>> as executor
+
+    rectangle "==Observatory\n(observatory.py)\n\n<size:10>[mcp-observatory library]</size>\n\n<i>Creates proposals with\nHMAC commit tokens.\nRisk-scores writes.\nVerifies tokens on commit.\nTracks invocation metrics.</i>" <<component>> as observatory
+
+    rectangle "==DynamoDB Client\n(dynamodb_client.py)\n\n<size:10>[boto3 / DynamoDB]</size>\n\n<i>CRUD for ApiCatalog,\nApiMeta, Proposals tables.\nBatch writes, TTL proposals,\nserialization helpers.</i>" <<component>> as dynamodb_client
+
+    rectangle "==DataDictionary Client\n(data_dictionary_client.py)\n\n<size:10>[httpx / JSON-RPC 2.0]</size>\n\n<i>3-pass field metadata lookup:\nexact name, search,\ncontext bulk fetch.\nGraceful degradation.</i>" <<component>> as dd_client
+
+}
+
+' ── External Dependencies ─────────────────────────────────────────────────────
+rectangle "==Amazon Bedrock\n\n<size:10>[Claude 3 Haiku / Converse API]</size>\n\n<i>Processes agent tool-use\nloop and returns structured\nfinalize_plan responses</i>" <<external_system>> as bedrock_ext
+
+rectangle "==DataDictionary Lambda\n\n<size:10>[FastMCP / HTTP]</size>\n\n<i>Returns field-level metadata\nvia JSON-RPC</i>" <<external_system>> as dd_lambda
+
+database "==ApiCatalog Table\n\n<size:10>[DynamoDB]</size>\n\n<i>Persisted endpoint entries\nwith enrichment data</i>" <<container_db>> as catalog_db
+
+database "==Proposals Table\n\n<size:10>[DynamoDB]</size>\n\n<i>Write proposal storage\nwith 1-hour TTL</i>" <<container_db>> as proposals_db
+
+rectangle "==Target REST APIs\n\n<size:10>[HTTPS]</size>\n\n<i>External services executed\non behalf of the caller</i>" <<external_system>> as target_api_ext
+
+' ── Relationships: Entry ─────────────────────────────────────────────────────
+mcp_client --> apigw : "MCP tool call\n[HTTPS / JSON]"
+apigw --> mangum : "Lambda Proxy Event"
+mangum --> server : "ASGI request\n[in-process]"
+
+' ── pre_tool flow ─────────────────────────────────────────────────────────
+server --> agent : "pre_tool:\ndelegates prompt\n+ session_id"
+agent --> catalog_search : "search_endpoints(query)\n[in-process]"
+agent --> dd_client : "lookup_field_metadata\n[in-process]"
+dd_client --> dd_lambda : "JSON-RPC:\nget_data_element\nsearch_data_elements"
+agent --> bedrock_ext : "Converse API\ntool-use loop\n[AWS SDK]"
+
+' ── post_tool + commit flow ───────────────────────────────────────────────
+server --> executor : "post_tool (GET):\nimmmediate HTTP call"
+server --> observatory : "post_tool (write):\npropose() risk score\n+ HMAC token"
+observatory --> proposals_db : "save_proposal\n[DynamoDB TTL]"
+executor --> target_api_ext : "HTTP GET / write\n[httpx / HTTPS]"
+server --> dynamodb_client : "commit_api_call:\nget_proposal_data"
+server -right-> observatory : "commit_api_call:\nverify(proposal_id, token)"
+dynamodb_client --> catalog_db : "load_full_catalog\nwrite_endpoint_batch"
+dynamodb_client --> proposals_db : "get_proposal_data"
+
+@enduml

@@ -1,0 +1,69 @@
+' C4 Model - Context Diagram Macros
+' Local copy — no external URL dependencies
+' Based on C4-PlantUML (https://github.com/plantuml-stdlib/C4-PlantUML)
+
+!include ./C4.puml
+
+' ── Person ──────────────────────────────────────────────────────────────────
+!define Person(alias, label, descr) \
+    rectangle "==label\n\n<size:10>[Person]</size>\n\n<i>descr</i>" <<person>> as alias
+
+!define Person_Ext(alias, label, descr) \
+    rectangle "==label\n\n<size:10>[External Person]</size>\n\n<i>descr</i>" <<external_person>> as alias
+
+' ── Software System ─────────────────────────────────────────────────────────
+!define System(alias, label, descr) \
+    rectangle "==label\n\n<size:10>[Software System]</size>\n\n<i>descr</i>" <<system>> as alias
+
+!define System_Ext(alias, label, descr) \
+    rectangle "==label\n\n<size:10>[External Software System]</size>\n\n<i>descr</i>" <<external_system>> as alias
+
+!define SystemDb(alias, label, descr) \
+    database "==label\n\n<size:10>[Software System]</size>\n\n<i>descr</i>" <<system_db>> as alias
+
+!define SystemDb_Ext(alias, label, descr) \
+    database "==label\n\n<size:10>[External Software System]</size>\n\n<i>descr</i>" <<external_system_db>> as alias
+
+' ── Boundary (open – close with '}' in the diagram) ─────────────────────────
+!define System_Boundary(alias, label) \
+    rectangle "label" <<boundary>> as alias {
+
+!define Enterprise_Boundary(alias, label) \
+    rectangle "label" <<boundary>> as alias {
+
+' ── Relationships ───────────────────────────────────────────────────────────
+!define Rel(from, to, label) \
+    from --> to : "label"
+
+!define Rel(from, to, label, technology) \
+    from --> to : "label\n<size:10>[technology]</size>"
+
+!define Rel_Back(from, to, label) \
+    to --> from : "label"
+
+!define Rel_Neighbor(from, to, label) \
+    from --> to : "label"
+
+!define Rel_D(from, to, label) \
+    from -down-> to : "label"
+
+!define Rel_U(from, to, label) \
+    from -up-> to : "label"
+
+!define Rel_L(from, to, label) \
+    from -left-> to : "label"
+
+!define Rel_R(from, to, label) \
+    from -right-> to : "label"
+
+!define Rel_D(from, to, label, technology) \
+    from -down-> to : "label\n<size:10>[technology]</size>"
+
+!define Rel_U(from, to, label, technology) \
+    from -up-> to : "label\n<size:10>[technology]</size>"
+
+!define Rel_L(from, to, label, technology) \
+    from -left-> to : "label\n<size:10>[technology]</size>"
+
+!define Rel_R(from, to, label, technology) \
+    from -right-> to : "label\n<size:10>[technology]</size>"
