@@ -1,6 +1,5 @@
 ' C4 Model - Base Styles and Skinparams
-' Local copy — no external URL dependencies
-' Based on C4-PlantUML (https://github.com/plantuml-stdlib/C4-PlantUML)
+' Local copy - no external URL dependencies
 
 skinparam defaultFontName Helvetica
 skinparam defaultFontSize 12
@@ -16,107 +15,89 @@ skinparam arrow {
     FontSize 12
 }
 
-' ── Person ──────────────────────────────────────────────────────────────────
 skinparam rectangle<<person>> {
     BackgroundColor #08427b
     BorderColor #073b6f
     FontColor #ffffff
     BorderThickness 2
-    RoundCorner 5
+    RoundCorner 8
 }
-
 skinparam rectangle<<external_person>> {
     BackgroundColor #686868
     BorderColor #8a8a8a
     FontColor #ffffff
     BorderThickness 2
-    RoundCorner 5
+    RoundCorner 8
 }
-
-' ── Software System ─────────────────────────────────────────────────────────
 skinparam rectangle<<system>> {
     BackgroundColor #1168bd
     BorderColor #3c7fc0
     FontColor #ffffff
     BorderThickness 2
-    RoundCorner 5
+    RoundCorner 8
 }
-
 skinparam rectangle<<external_system>> {
     BackgroundColor #999999
     BorderColor #8a8a8a
     FontColor #ffffff
     BorderThickness 2
-    RoundCorner 5
+    RoundCorner 8
 }
-
 skinparam database<<system_db>> {
     BackgroundColor #1168bd
     BorderColor #3c7fc0
     FontColor #ffffff
     BorderThickness 2
 }
-
 skinparam database<<external_system_db>> {
     BackgroundColor #999999
     BorderColor #8a8a8a
     FontColor #ffffff
     BorderThickness 2
 }
-
-' ── Container ───────────────────────────────────────────────────────────────
 skinparam rectangle<<container>> {
     BackgroundColor #438dd5
     BorderColor #3c7fc0
     FontColor #ffffff
     BorderThickness 2
-    RoundCorner 5
+    RoundCorner 8
 }
-
 skinparam rectangle<<external_container>> {
     BackgroundColor #b3b3b3
     BorderColor #a0a0a0
     FontColor #ffffff
     BorderThickness 2
-    RoundCorner 5
+    RoundCorner 8
 }
-
 skinparam database<<container_db>> {
     BackgroundColor #438dd5
     BorderColor #3c7fc0
     FontColor #ffffff
     BorderThickness 2
 }
-
 skinparam queue<<container_queue>> {
     BackgroundColor #438dd5
     BorderColor #3c7fc0
     FontColor #ffffff
     BorderThickness 2
 }
-
-' ── Component ───────────────────────────────────────────────────────────────
 skinparam rectangle<<component>> {
     BackgroundColor #85bbf0
     BorderColor #78a8d8
     FontColor #000000
     BorderThickness 2
-    RoundCorner 5
+    RoundCorner 8
 }
-
 skinparam database<<component_db>> {
     BackgroundColor #85bbf0
     BorderColor #78a8d8
     FontColor #000000
     BorderThickness 2
 }
-
-' ── Boundary ────────────────────────────────────────────────────────────────
 skinparam rectangle<<boundary>> {
     BackgroundColor transparent
     BorderColor #444444
-    BorderStyle dashed
     FontColor #444444
     BorderThickness 1
-    RoundCorner 5
+    RoundCorner 8
 }

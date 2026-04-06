@@ -1,36 +1,36 @@
 @startuml C4-Context-ToolWeave
-' C4 Level 1 – System Context Diagram
+' C4 Level 1 - System Context Diagram
 ' ToolWeave: NL-to-REST API bridge via MCP
 
-title ToolWeave — C4 Level 1: System Context
+title ToolWeave - C4 Level 1: System Context
 
 top to bottom direction
 
-!include ./assets/C4Context.puml
+!include ./assets/C4.puml
 
 ' ── Actors ───────────────────────────────────────────────────────────────────
-Person(developer, "Developer / MCP Client", "Uses an MCP-compatible client\n(e.g. Claude Desktop, custom app)\nto issue natural-language API requests")
+rectangle "==Developer / MCP Client\n\n<size:10>[Person]</size>\n\n<i>Uses an MCP-compatible\nclient (Claude Desktop, app)\nto issue natural-language\nAPI requests</i>" <<person>> as developer
 
-Person(api_owner, "API Owner", "Uploads OpenAPI/Swagger specs\nto bootstrap the API catalog")
+rectangle "==API Owner\n\n<size:10>[Person]</size>\n\n<i>Uploads OpenAPI/Swagger\nspecs to bootstrap\nthe API catalog</i>" <<person>> as api_owner
 
 ' ── Internal System ──────────────────────────────────────────────────────────
-System(toolweave, "ToolWeave", "FastMCP server that translates\nnatural-language prompts into\nREST API calls with proposal\ngating for write operations")
+rectangle "==ToolWeave\n\n<size:10>[Software System]</size>\n\n<i>FastMCP server that\ntranslates natural-language\nprompts into REST API calls\nwith proposal gating\nfor write operations</i>" <<system>> as toolweave
 
 ' ── External Systems ─────────────────────────────────────────────────────────
-System_Ext(target_api, "Target REST APIs", "Customer / partner REST services\nthat ToolWeave executes on behalf\nof the caller")
+rectangle "==Target REST APIs\n\n<size:10>[External Software System]</size>\n\n<i>Customer / partner REST\nservices that ToolWeave\nexecutes on behalf\nof the caller</i>" <<external_system>> as target_api
 
-System_Ext(bedrock, "Amazon Bedrock\n(Claude 3 Haiku)", "Foundation model used for\nAI-powered API planning\nand endpoint enrichment")
+rectangle "==Amazon Bedrock\n\n<size:10>[External Software System]</size>\n\n<i>Claude 3 Haiku via\nConverse API for AI\nplanning and endpoint\nenrichment</i>" <<external_system>> as bedrock
 
-System_Ext(data_dictionary, "DataDictionary MCP", "Shared MCP Lambda service\nthat provides field-level\nmetadata (format, constraints)")
+rectangle "==DataDictionary MCP\n\n<size:10>[External Software System]</size>\n\n<i>Shared Lambda service\nthat provides field-level\nmetadata (format, constraints)</i>" <<external_system>> as data_dictionary
 
-System_Ext(observatory, "mcp-observatory", "Risk scoring and proposal/commit\ngating library — HMAC token\nmanagement and metrics")
+rectangle "==mcp-observatory\n\n<size:10>[External Software System]</size>\n\n<i>Risk scoring, HMAC\nproposal / commit tokens\nand invocation metrics</i>" <<external_system>> as observatory
 
 ' ── Relationships ────────────────────────────────────────────────────────────
-Rel(developer, toolweave, "Calls MCP tools", "MCP over HTTPS")
-Rel(api_owner, toolweave, "Uploads OpenAPI spec to S3\nTriggers catalog ingestion", "AWS Console / CLI")
-Rel(toolweave, target_api, "Executes REST calls on\nbehalf of developer", "HTTPS / JSON")
-Rel(toolweave, bedrock, "AI planning & enrichment", "AWS SDK / Converse API")
-Rel(toolweave, data_dictionary, "Fetches field metadata", "HTTP JSON-RPC")
-Rel(toolweave, observatory, "Risk scoring, proposal\nand commit gating", "Library (in-process)")
+developer --> toolweave : "Calls MCP tools\n[MCP over HTTPS]"
+api_owner --> toolweave : "Uploads OpenAPI spec\ntriggers catalog ingestion\n[AWS Console / CLI]"
+toolweave --> target_api : "Executes REST calls\non behalf of developer\n[HTTPS / JSON]"
+toolweave --> bedrock : "AI planning\nand enrichment\n[AWS SDK / Converse API]"
+toolweave --> data_dictionary : "Fetches field metadata\n[HTTP JSON-RPC]"
+toolweave --> observatory : "Risk scoring, proposal\nand commit gating\n[Library in-process]"
 
 @enduml

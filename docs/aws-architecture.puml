@@ -1,89 +1,74 @@
 @startuml AWS-Architecture-ToolWeave
-' AWS Deployment Architecture — ToolWeave
-' All assets local — no external URL imports
+' AWS Deployment Architecture - ToolWeave
+' All assets local - no external URL imports
 
-title ToolWeave — AWS Deployment Architecture
+title ToolWeave - AWS Deployment Architecture
 
 top to bottom direction
 
 !include ./assets/AWSCommon.puml
 
-skinparam legendBackgroundColor #ffffff
-skinparam legendBorderColor #cccccc
-
 ' ── Actors ───────────────────────────────────────────────────────────────────
 rectangle "==Developer\n\n<size:10>[MCP Client]</size>\n\n<i>Claude Desktop or\ncustom MCP app</i>" <<user>> as developer
 rectangle "==API Owner\n\n<size:10>[Human]</size>\n\n<i>Uploads OpenAPI\nspec files</i>" <<user>> as api_owner
-rectangle "==GitHub Actions\n\n<size:10>[CI/CD Pipeline]</size>\n\n<i>SAM build & deploy\nvia OIDC</i>" <<github>> as gh_actions
+rectangle "==GitHub Actions\n\n<size:10>[CI/CD Pipeline]</size>\n\n<i>SAM build and deploy\nvia OIDC</i>" <<github>> as gh_actions
 
-' ── AWS Account Boundary ─────────────────────────────────────────────────────
+' ── AWS Account ──────────────────────────────────────────────────────────────
 rectangle "AWS Account  |  us-east-1" <<aws_account>> {
 
-    ' ── API Entry ────────────────────────────────────────────────────────────
     rectangle "==ToolWeave HTTP API\n\n<size:10>[API Gateway v2]</size>\n\n<i>HTTPS entry point\nCORS enabled\nAWS_PROXY integration</i>" <<apigw>> as apigw
 
-    ' ── VPC Boundary ─────────────────────────────────────────────────────────
-    rectangle "VPC  (toolweave-shared)" <<vpc>> {
+    ' ── VPC ──────────────────────────────────────────────────────────────────
+    rectangle "VPC  (tarun-teamweave-shared)" <<vpc>> {
 
         rectangle "==ToolWeaveFunction\n\n<size:10>[AWS Lambda]</size>\n\n<i>Python 3.12 / FastMCP\n1024 MB / 120 s timeout\nMCP Server + 4 tools</i>" <<lambda>> as toolweave_fn
 
         rectangle "==SwaggerProcessorFunction\n\n<size:10>[AWS Lambda]</size>\n\n<i>Python 3.12\n512 MB / 300 s timeout\nSpec ingestion pipeline</i>" <<lambda>> as swagger_fn
 
-        rectangle "==LambdaSecurityGroup\n\n<size:10>[Security Group]</size>\n\n<i>Outbound: HTTPS only\nNo inbound rules</i>" <<iam>> as sg
+        rectangle "==LambdaSecurityGroup\n\n<size:10>[AWS Security Group]</size>\n\n<i>Outbound: HTTPS only\nNo inbound rules</i>" <<iam>> as sg
 
     }
 
-    ' ── Storage ──────────────────────────────────────────────────────────────
     rectangle "==API Specs Bucket\n\n<size:10>[Amazon S3]</size>\n\n<i>toolweave-api-specs-{account}-{region}\nVersioning enabled\nEventBridge notifications on</i>" <<s3>> as s3_bucket
 
-    rectangle "==S3 ObjectCreated Rule\n\n<size:10>[Amazon EventBridge]</size>\n\n<i>source: aws.s3\nFilter: .yaml/.yml/.json\nTarget: SwaggerProcessor</i>" <<eventbridge>> as event_rule
+    rectangle "==S3 ObjectCreated Rule\n\n<size:10>[Amazon EventBridge]</size>\n\n<i>source: aws.s3\nFilter: .yaml / .yml / .json\nTarget: SwaggerProcessor</i>" <<eventbridge>> as event_rule
 
-    ' ── DynamoDB Tables ──────────────────────────────────────────────────────
-    database "==ApiCatalog\n\n<size:10>[Amazon DynamoDB]</size>\n\n<i>PK: api_id\nSK: operation_id\nEndpoint entries + enrichment</i>" <<dynamodb>> as catalog_table
+    database "==ApiCatalog\n\n<size:10>[Amazon DynamoDB]</size>\n\n<i>PK: api_id  SK: operation_id\nEndpoint entries + enrichment\nhints from Bedrock</i>" <<dynamodb>> as catalog_table
 
-    database "==ApiMeta\n\n<size:10>[Amazon DynamoDB]</size>\n\n<i>PK: api_id\nAPI metadata: title, base_url,\ncontext_name, endpoint_count</i>" <<dynamodb>> as meta_table
+    database "==ApiMeta\n\n<size:10>[Amazon DynamoDB]</size>\n\n<i>PK: api_id\nAPI metadata: title,\nbase_url, context_name</i>" <<dynamodb>> as meta_table
 
-    database "==Proposals\n\n<size:10>[Amazon DynamoDB]</size>\n\n<i>PK: proposal_id\nTTL: 3600 s\nWrite proposal persistence</i>" <<dynamodb>> as proposals_table
+    database "==Proposals\n\n<size:10>[Amazon DynamoDB]</size>\n\n<i>PK: proposal_id  TTL: 3600 s\nWrite proposal persistence\nacross Lambda invocations</i>" <<dynamodb>> as proposals_table
 
-    ' ── Shared Infrastructure ────────────────────────────────────────────────
     rectangle "Shared Stack  (tarun-teamweave-shared)" <<aws_region>> {
-
-        database "==Observatory Metrics\n\n<size:10>[Amazon DynamoDB]</size>\n\n<i>PK: INVOCATION#{tool_name}\nSK: timestamp\nDuration, status, errors</i>" <<dynamodb>> as metrics_table
-
+        database "==Observatory Metrics\n\n<size:10>[Amazon DynamoDB - Shared]</size>\n\n<i>PK: INVOCATION#{tool_name}\nSK: timestamp\nDuration, status, errors</i>" <<dynamodb>> as metrics_table
     }
 
-    ' ── IAM ──────────────────────────────────────────────────────────────────
-    rectangle "==ToolWeaveLambdaRole\n\n<size:10>[AWS IAM Role]</size>\n\n<i>Bedrock:InvokeModel\nDynamoDB:CRUD\nS3:GetObject\nVPC execution</i>" <<iam>> as iam_role
+    rectangle "==ToolWeaveLambdaRole\n\n<size:10>[AWS IAM Role]</size>\n\n<i>Bedrock: InvokeModel\nDynamoDB: CRUD on own tables\nS3: GetObject on specs bucket\nVPC execution managed policy</i>" <<iam>> as iam_role
 
 }
 
 ' ── External Services ────────────────────────────────────────────────────────
-rectangle "==Amazon Bedrock\n(Claude 3 Haiku)\n\n<size:10>[External AWS Service]</size>\n\n<i>Converse API for\nAI planning + enrichment</i>" <<bedrock>> as bedrock
+rectangle "==Amazon Bedrock\n(Claude 3 Haiku)\n\n<size:10>[External AWS Managed Service]</size>\n\n<i>Converse API for\nAI planning + enrichment</i>" <<bedrock>> as bedrock
 
 rectangle "==DataDictionary Lambda\n\n<size:10>[External Lambda URL]</size>\n\n<i>Shared MCP service\nField metadata lookup\nJSON-RPC 2.0</i>" <<external>> as dd_lambda
 
 rectangle "==Target REST APIs\n\n<size:10>[External Services]</size>\n\n<i>Customer / partner\nHTTPS endpoints executed\non behalf of caller</i>" <<external>> as target_apis
 
 ' ── Relationships ────────────────────────────────────────────────────────────
-' Developer / Owner access
 developer --> apigw : "MCP tool calls\n[HTTPS / JSON-RPC]"
 api_owner --> s3_bucket : "Upload OpenAPI specs\n[AWS Console / CLI]"
 gh_actions --> toolweave_fn : "SAM deploy\n[CloudFormation / OIDC]"
 
-' API Gateway → Lambda
 apigw --> toolweave_fn : "AWS_PROXY integration\n[Lambda Invoke]"
 
-' S3 → EventBridge → SwaggerProcessor
 s3_bucket ..> event_rule : "ObjectCreated event\n[async]"
 event_rule ..> swagger_fn : "Rule target invoke\n[async]"
 
-' SwaggerProcessor dependencies
-swagger_fn --> s3_bucket : "GetObject (spec file)\n[AWS SDK]"
-swagger_fn --> bedrock : "Endpoint enrichment\nConverse API\n[AWS SDK / HTTPS]"
+swagger_fn --> s3_bucket : "GetObject (spec file)"
+swagger_fn --> bedrock : "Endpoint enrichment\n[Converse API / HTTPS]"
 swagger_fn --> catalog_table : "BatchWriteItem\n[AWS SDK]"
 swagger_fn --> meta_table : "PutItem\n[AWS SDK]"
 
-' ToolWeave Lambda dependencies
 toolweave_fn --> catalog_table : "Scan / Query\n[AWS SDK]"
 toolweave_fn --> proposals_table : "PutItem / GetItem\n[AWS SDK]"
 toolweave_fn --> bedrock : "Converse API\n(agent planning)\n[AWS SDK / HTTPS]"
@@ -91,24 +76,21 @@ toolweave_fn --> dd_lambda : "Field metadata lookup\n[HTTP / JSON-RPC]"
 toolweave_fn --> target_apis : "Execute REST calls\n[httpx / HTTPS]"
 toolweave_fn --> metrics_table : "PutItem (metrics)\n[AWS SDK]"
 
-' IAM
 iam_role -[dashed]-> toolweave_fn : "assumed by"
 iam_role -[dashed]-> swagger_fn : "assumed by"
-
-' Security Group
 sg -[dashed]-> toolweave_fn : "attached to"
 sg -[dashed]-> swagger_fn : "attached to"
 
 legend right
-  |= Shape |= Meaning |
-  |<#FF9900> Lambda | AWS Lambda Function |
-  |<#A166FF> API GW | API Gateway HTTP API |
-  |<#3F8624> S3 | Amazon S3 Bucket |
-  |<#4053D6> DynamoDB | Amazon DynamoDB Table |
-  |<#E7157B> EventBridge | Amazon EventBridge Rule |
-  |<#01A88D> Bedrock | Amazon Bedrock (AI) |
-  |<#DD344C> IAM | IAM Role / Security Group |
-  |<#999999> External | External Service |
+  |= Shape |= AWS Service |
+  |<#FF9900> Lambda    | AWS Lambda Function    |
+  |<#A166FF> API GW    | API Gateway HTTP API   |
+  |<#3F8624> S3        | Amazon S3 Bucket       |
+  |<#4053D6> DynamoDB  | Amazon DynamoDB Table  |
+  |<#E7157B> EventBridge | Amazon EventBridge   |
+  |<#01A88D> Bedrock   | Amazon Bedrock (AI)    |
+  |<#DD344C> IAM / SG  | IAM Role / Sec. Group  |
+  |<#999999> External  | External Service       |
 endlegend
 
 @enduml
