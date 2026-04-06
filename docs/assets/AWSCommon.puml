@@ -1,6 +1,5 @@
-' AWS Architecture - Common Styles and Macros
-' Local copy — no external URL dependencies
-' AWS color palette: https://aws.amazon.com/architecture/icons/
+' AWS Architecture - Common Styles
+' Local copy - no external URL dependencies
 
 skinparam defaultFontName Helvetica
 skinparam defaultFontSize 12
@@ -13,177 +12,93 @@ skinparam arrow {
     FontSize 11
 }
 
-' ── AWS Service Color Palette ────────────────────────────────────────────────
-' Compute
 skinparam rectangle<<lambda>> {
     BackgroundColor #FF9900
     BorderColor #E88B00
     FontColor #ffffff
     BorderThickness 2
-    RoundCorner 5
+    RoundCorner 8
 }
-
-' API Gateway
 skinparam rectangle<<apigw>> {
     BackgroundColor #A166FF
     BorderColor #8A50E0
     FontColor #ffffff
     BorderThickness 2
-    RoundCorner 5
+    RoundCorner 8
 }
-
-' Storage
 skinparam rectangle<<s3>> {
     BackgroundColor #3F8624
     BorderColor #2F6B18
     FontColor #ffffff
     BorderThickness 2
-    RoundCorner 5
+    RoundCorner 8
 }
-
-' Database
 skinparam database<<dynamodb>> {
     BackgroundColor #4053D6
     BorderColor #2E3FAD
     FontColor #ffffff
     BorderThickness 2
 }
-
-' EventBridge / Messaging
 skinparam rectangle<<eventbridge>> {
     BackgroundColor #E7157B
     BorderColor #C0116A
     FontColor #ffffff
     BorderThickness 2
-    RoundCorner 5
+    RoundCorner 8
 }
-
-' AI / ML - Bedrock
 skinparam rectangle<<bedrock>> {
     BackgroundColor #01A88D
     BorderColor #008070
     FontColor #ffffff
     BorderThickness 2
-    RoundCorner 5
+    RoundCorner 8
 }
-
-' IAM / Security
 skinparam rectangle<<iam>> {
     BackgroundColor #DD344C
     BorderColor #B82A3E
     FontColor #ffffff
     BorderThickness 2
-    RoundCorner 5
+    RoundCorner 8
 }
-
-' VPC / Networking
 skinparam rectangle<<vpc>> {
     BackgroundColor transparent
     BorderColor #8C4FFF
-    BorderStyle dashed
     FontColor #8C4FFF
     BorderThickness 2
-    RoundCorner 8
+    RoundCorner 10
 }
-
-' CloudWatch / Monitoring
-skinparam rectangle<<cloudwatch>> {
-    BackgroundColor #FF4F8B
-    BorderColor #D93A72
-    FontColor #ffffff
-    BorderThickness 2
-    RoundCorner 5
-}
-
-' GitHub Actions / External CI
-skinparam rectangle<<github>> {
-    BackgroundColor #24292E
-    BorderColor #1B1F23
-    FontColor #ffffff
-    BorderThickness 2
-    RoundCorner 5
-}
-
-' Generic AWS region boundary
-skinparam rectangle<<aws_region>> {
-    BackgroundColor transparent
-    BorderColor #FF9900
-    BorderStyle dashed
-    FontColor #FF9900
-    BorderThickness 2
-    RoundCorner 8
-}
-
-' Generic AWS account boundary
 skinparam rectangle<<aws_account>> {
     BackgroundColor transparent
     BorderColor #232F3E
-    BorderStyle dashed
     FontColor #232F3E
     BorderThickness 2
     RoundCorner 10
 }
-
-' External system
+skinparam rectangle<<aws_region>> {
+    BackgroundColor transparent
+    BorderColor #FF9900
+    FontColor #FF9900
+    BorderThickness 2
+    RoundCorner 10
+}
 skinparam rectangle<<external>> {
     BackgroundColor #999999
     BorderColor #888888
     FontColor #ffffff
     BorderThickness 2
-    RoundCorner 5
+    RoundCorner 8
 }
-
-' User / Actor
 skinparam rectangle<<user>> {
     BackgroundColor #08427b
     BorderColor #073b6f
     FontColor #ffffff
     BorderThickness 2
-    RoundCorner 5
+    RoundCorner 8
 }
-
-' ── Service Shape Macros ─────────────────────────────────────────────────────
-
-!define AWSLambda(alias, label, descr) \
-    rectangle "==label\n\n<size:10>[AWS Lambda]</size>\n\n<i>descr</i>" <<lambda>> as alias
-
-!define AWSApiGateway(alias, label, descr) \
-    rectangle "==label\n\n<size:10>[API Gateway HTTP API]</size>\n\n<i>descr</i>" <<apigw>> as alias
-
-!define AWSS3(alias, label, descr) \
-    rectangle "==label\n\n<size:10>[Amazon S3]</size>\n\n<i>descr</i>" <<s3>> as alias
-
-!define AWSDynamoDB(alias, label, descr) \
-    database "==label\n\n<size:10>[Amazon DynamoDB]</size>\n\n<i>descr</i>" <<dynamodb>> as alias
-
-!define AWSEventBridge(alias, label, descr) \
-    rectangle "==label\n\n<size:10>[Amazon EventBridge]</size>\n\n<i>descr</i>" <<eventbridge>> as alias
-
-!define AWSBedrock(alias, label, descr) \
-    rectangle "==label\n\n<size:10>[Amazon Bedrock]</size>\n\n<i>descr</i>" <<bedrock>> as alias
-
-!define AWSCloudWatch(alias, label, descr) \
-    rectangle "==label\n\n<size:10>[Amazon CloudWatch]</size>\n\n<i>descr</i>" <<cloudwatch>> as alias
-
-' ── Relationship Macros ──────────────────────────────────────────────────────
-
-!define Rel(from, to, label) \
-    from --> to : "label"
-
-!define Rel(from, to, label, protocol) \
-    from --> to : "label\n<size:10>[protocol]</size>"
-
-!define Rel_D(from, to, label) \
-    from -down-> to : "label"
-
-!define Rel_U(from, to, label) \
-    from -up-> to : "label"
-
-!define Rel_L(from, to, label) \
-    from -left-> to : "label"
-
-!define Rel_R(from, to, label) \
-    from -right-> to : "label"
-
-!define Rel_Async(from, to, label) \
-    from ..> to : "label\n<size:10>[async]</size>"
+skinparam rectangle<<github>> {
+    BackgroundColor #24292E
+    BorderColor #1B1F23
+    FontColor #ffffff
+    BorderThickness 2
+    RoundCorner 8
+}

@@ -1,65 +1,65 @@
 @startuml C4-Container-ToolWeave
-' C4 Level 2 – Container Diagram
+' C4 Level 2 - Container Diagram
 ' ToolWeave: NL-to-REST API bridge via MCP
 
-title ToolWeave — C4 Level 2: Containers
+title ToolWeave - C4 Level 2: Containers
 
 top to bottom direction
 
-!include ./assets/C4Container.puml
+!include ./assets/C4.puml
 
 ' ── External Actors ──────────────────────────────────────────────────────────
-Person(developer, "Developer / MCP Client", "Issues natural-language\nAPI requests")
-Person(api_owner, "API Owner", "Uploads OpenAPI/Swagger specs")
+rectangle "==Developer / MCP Client\n\n<size:10>[Person]</size>\n\n<i>Issues natural-language\nAPI requests</i>" <<person>> as developer
+rectangle "==API Owner\n\n<size:10>[Person]</size>\n\n<i>Uploads OpenAPI/\nSwagger specs</i>" <<person>> as api_owner
 
-' ── AWS Boundary ─────────────────────────────────────────────────────────────
-System_Boundary(aws, "AWS Account  |  us-east-1") {
+' ── AWS Account Boundary ─────────────────────────────────────────────────────
+rectangle "AWS Account  |  us-east-1" <<boundary>> {
 
-    Container(apigw, "API Gateway HTTP API", "AWS API Gateway v2", "HTTPS entry point for MCP\nrequests; routes to ToolWeave\nLambda via AWS_PROXY integration")
+    rectangle "==API Gateway HTTP API\n\n<size:10>[AWS API Gateway v2]</size>\n\n<i>HTTPS entry point\nCORS enabled\nAWS_PROXY integration</i>" <<container>> as apigw
 
-    Container(toolweave_fn, "ToolWeave Lambda", "Python 3.12 / FastMCP\n1024 MB / 120 s timeout", "Hosts the MCP server.\nExposes 4 tools: pre_tool,\npost_tool, commit_api_call,\nreload_catalog")
+    rectangle "==ToolWeave Lambda\n\n<size:10>[Python 3.12 / FastMCP]</size>\n\n<i>1024 MB / 120 s timeout\nHosts the MCP server\n4 tools: pre_tool, post_tool,\ncommit_api_call, reload_catalog</i>" <<container>> as toolweave_fn
 
-    Container(swagger_fn, "SwaggerProcessor Lambda", "Python 3.12\n512 MB / 300 s timeout", "Triggered by EventBridge on\nS3 object creation. Parses\nOpenAPI specs and enriches\nendpoints via Bedrock. Writes\nresults to DynamoDB.")
+    rectangle "==SwaggerProcessor Lambda\n\n<size:10>[Python 3.12]</size>\n\n<i>512 MB / 300 s timeout\nSpec ingestion pipeline\nTriggered by EventBridge</i>" <<container>> as swagger_fn
 
-    ContainerDb(catalog_table, "ApiCatalog Table", "Amazon DynamoDB\nPK: api_id  SK: operation_id", "Stores normalized endpoint\nentries with AI enrichment hints\n(agent_hint, example_prompts, etc.)")
+    database "==ApiCatalog Table\n\n<size:10>[Amazon DynamoDB]</size>\n\n<i>PK: api_id\nSK: operation_id\nEndpoint entries + enrichment</i>" <<container_db>> as catalog_table
 
-    ContainerDb(meta_table, "ApiMeta Table", "Amazon DynamoDB\nPK: api_id", "Stores per-API metadata:\ntitle, base_url, context_name,\nendpoint_count, parsed_at")
+    database "==ApiMeta Table\n\n<size:10>[Amazon DynamoDB]</size>\n\n<i>PK: api_id\nPer-API metadata:\ntitle, base_url, context_name</i>" <<container_db>> as meta_table
 
-    ContainerDb(proposals_table, "Proposals Table", "Amazon DynamoDB\nPK: proposal_id  TTL: 3600s", "Persists write proposals across\nLambda invocations for the\npre_tool → commit_api_call flow")
+    database "==Proposals Table\n\n<size:10>[Amazon DynamoDB]</size>\n\n<i>PK: proposal_id\nTTL: 3600 s\nWrite proposal persistence</i>" <<container_db>> as proposals_table
 
-    Container(api_specs_bucket, "API Specs Bucket", "Amazon S3\nVersioning enabled", "Stores OpenAPI/Swagger spec\nfiles (.yaml/.yml/.json)\nuploaded by API owners")
+    rectangle "==API Specs Bucket\n\n<size:10>[Amazon S3]</size>\n\n<i>Versioning enabled\nStores OpenAPI / Swagger\nspec files (.yaml/.json)</i>" <<container>> as s3_bucket
 
-    ContainerQueue(event_rule, "S3 Object Created Rule", "Amazon EventBridge", "Forwards S3 ObjectCreated\nevents to SwaggerProcessor\nLambda (avoids CloudFormation\ncircular dependency)")
+    queue "==S3 ObjectCreated Rule\n\n<size:10>[Amazon EventBridge]</size>\n\n<i>Bridges S3 events to\nSwaggerProcessor Lambda</i>" <<container_queue>> as event_rule
 
 }
 
 ' ── External Systems ─────────────────────────────────────────────────────────
-System_Ext(bedrock, "Amazon Bedrock\n(Claude 3 Haiku)", "Foundation model for API\nplanning (Converse API) and\nspec enrichment (per-endpoint)")
+rectangle "==Amazon Bedrock\n\n<size:10>[External - Claude 3 Haiku]</size>\n\n<i>Converse API for AI\nplanning and per-endpoint\nspec enrichment</i>" <<external_system>> as bedrock
 
-System_Ext(data_dictionary, "DataDictionary MCP Lambda", "Shared service providing\nfield-level metadata (format,\nconstraints, examples)")
+rectangle "==DataDictionary MCP Lambda\n\n<size:10>[External Lambda URL]</size>\n\n<i>Field-level metadata:\nformat, constraints, examples\nvia JSON-RPC 2.0</i>" <<external_system>> as data_dictionary
 
-System_Ext(target_api, "Target REST APIs", "External services called\nby ToolWeave on behalf of\nthe developer")
+rectangle "==Target REST APIs\n\n<size:10>[External Services]</size>\n\n<i>External services called\nby ToolWeave on behalf\nof the developer</i>" <<external_system>> as target_api
 
-System_Ext(metrics_table, "Shared Metrics Table", "Amazon DynamoDB in\nteamweave-shared stack.\nStores tool invocation metrics.")
+database "==Shared Metrics Table\n\n<size:10>[Amazon DynamoDB - Shared Stack]</size>\n\n<i>Stores tool invocation\nmetrics (duration, status)</i>" <<external_system_db>> as metrics_table
 
 ' ── Relationships ────────────────────────────────────────────────────────────
-Rel_D(developer, apigw, "MCP tool calls", "HTTPS / JSON-RPC")
-Rel_D(api_owner, api_specs_bucket, "Uploads spec files", "AWS SDK / CLI / Console")
+developer --> apigw : "MCP tool calls\n[HTTPS / JSON-RPC]"
+api_owner --> s3_bucket : "Uploads spec files\n[AWS SDK / CLI]"
 
-Rel_D(apigw, toolweave_fn, "Proxy all requests", "AWS Lambda Invoke")
-Rel_D(api_specs_bucket, event_rule, "ObjectCreated event", "EventBridge notification")
-Rel_D(event_rule, swagger_fn, "Triggers on new spec", "Lambda Invoke")
+apigw --> toolweave_fn : "Proxy all requests\n[Lambda Invoke]"
+s3_bucket ..> event_rule : "ObjectCreated event\n[EventBridge]"
+event_rule ..> swagger_fn : "Triggers on new spec\n[Lambda Invoke]"
 
-Rel(toolweave_fn, catalog_table, "Reads endpoint catalog\nat cold start / reload", "AWS SDK / DynamoDB")
-Rel(toolweave_fn, proposals_table, "Saves / reads proposals", "AWS SDK / DynamoDB")
-Rel(toolweave_fn, bedrock, "AI planning: Converse API", "AWS SDK / HTTPS")
-Rel(toolweave_fn, data_dictionary, "Field metadata lookup", "HTTP JSON-RPC")
-Rel(toolweave_fn, target_api, "Executes REST calls", "httpx / HTTPS")
-Rel(toolweave_fn, metrics_table, "Writes invocation metrics", "AWS SDK / DynamoDB")
+toolweave_fn --> catalog_table : "Reads endpoint catalog\nat cold start / reload"
+toolweave_fn --> proposals_table : "Saves / reads proposals"
+toolweave_fn --> bedrock : "AI planning\n[Converse API]"
+toolweave_fn --> data_dictionary : "Field metadata lookup\n[HTTP JSON-RPC]"
+toolweave_fn --> target_api : "Executes REST calls\n[httpx / HTTPS]"
+toolweave_fn --> metrics_table : "Writes invocation metrics"
 
-Rel(swagger_fn, api_specs_bucket, "Fetches spec content", "AWS SDK / S3 GetObject")
-Rel(swagger_fn, bedrock, "Endpoint enrichment\n(Converse API, per endpoint)", "AWS SDK / HTTPS")
-Rel(swagger_fn, catalog_table, "Batch-writes endpoints", "AWS SDK / DynamoDB")
-Rel(swagger_fn, meta_table, "Writes API metadata", "AWS SDK / DynamoDB")
+swagger_fn --> s3_bucket : "GetObject (spec file)"
+swagger_fn --> bedrock : "Endpoint enrichment\n[Converse API]"
+swagger_fn --> catalog_table : "BatchWriteItem endpoints"
+swagger_fn --> meta_table : "PutItem API metadata"
 
 @enduml
