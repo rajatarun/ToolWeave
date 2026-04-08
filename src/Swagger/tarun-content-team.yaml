@@ -1,1 +1,2193 @@
+openapi: 3.0.3
+info:
+  title: Tarun Content Team API
+  description: Comprehensive API for managing content teams, agents, departments, roles, and tasks with observability metrics
+  version: 1.0.0
+  contact:
+    name: Tarun Raja
+    email: rajatarun12@gmail.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+servers:
+  - url: https://sr6lu63px1.execute-api.us-east-1.amazonaws.com/prod
+    description: Production server (AWS API Gateway)
+security:
+  - CustomAuthorizer: []
+paths:
+  /agents:
+    get:
+      summary: List all content agents
+      description: Retrieve a comprehensive list of all content creation agents in the system
+      tags:
+        - Agents
+      parameters:
+        - name: status
+          in: query
+          description: Filter agents by status
+          schema:
+            type: string
+            enum: [active, inactive, busy, available]
+        - name: type
+          in: query
+          description: Filter agents by type
+          schema:
+            type: string
+            enum: [writer, editor, researcher, designer, reviewer, seo-specialist]
+        - name: limit
+          in: query
+          description: Maximum number of agents to return
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          description: Number of agents to skip for pagination
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Successfully retrieved list of agents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agents:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Agent'
+                  total:
+                    type: integer
+                    description: Total number of agents
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '400':
+          description: Invalid query parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized access
+        '500':
+          description: Internal server error
+    post:
+      summary: Create new content agent
+      description: Create a new AI content creation agent with specified capabilities and configuration
+      tags:
+        - Agents
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAgentRequest'
+      responses:
+        '201':
+          description: Agent created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Agent created successfully"
+                  agent:
+                    $ref: '#/components/schemas/Agent'
+        '400':
+          description: Invalid agent configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Agent with this name already exists
+        '500':
+          description: Failed to create agent
+    delete:
+      summary: Delete multiple agents
+      description: Remove multiple agents from the system (bulk delete operation)
+      tags:
+        - Agents
+      parameters:
+        - name: agentIds
+          in: query
+          required: true
+          description: Comma-separated list of agent IDs to delete
+          schema:
+            type: string
+            example: "agent1,agent2,agent3"
+      responses:
+        '204':
+          description: Agents deleted successfully
+        '400':
+          description: Invalid agent IDs provided
+        '404':
+          description: One or more agents not found
+        '500':
+          description: Failed to delete agents
+    options:
+      summary: CORS preflight for agents endpoint
+      description: Handle CORS preflight requests for agents endpoint
+      tags:
+        - CORS
+      responses:
+        '200':
+          description: CORS headers returned
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+                example: "https://tarunraja.info"
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+                example: "GET,POST,DELETE,OPTIONS"
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+                example: "Content-Type,Authorization,x-api-key"
 
+  /agents/{name}:
+    get:
+      summary: Get agent by name
+      description: Retrieve detailed information about a specific content agent by name
+      tags:
+        - Agents
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Unique name of the agent
+          schema:
+            type: string
+            example: "content-writer-ai"
+        - name: includeMetrics
+          in: query
+          description: Include performance metrics in response
+          schema:
+            type: boolean
+            default: false
+        - name: includeHistory
+          in: query
+          description: Include task history in response
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Agent details retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent:
+                    $ref: '#/components/schemas/Agent'
+                  metrics:
+                    $ref: '#/components/schemas/AgentMetrics'
+                  taskHistory:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TaskHistoryItem'
+        '404':
+          description: Agent not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Failed to retrieve agent
+    put:
+      summary: Update agent configuration
+      description: Update an existing agent's configuration, capabilities, and settings
+      tags:
+        - Agents
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAgentRequest'
+      responses:
+        '200':
+          description: Agent updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Agent updated successfully"
+                  agent:
+                    $ref: '#/components/schemas/Agent'
+        '400':
+          description: Invalid update data
+        '404':
+          description: Agent not found
+        '500':
+          description: Failed to update agent
+    options:
+      summary: CORS preflight for specific agent
+      tags:
+        - CORS
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: CORS headers returned
+
+  /departments:
+    get:
+      summary: List all departments
+      description: Retrieve all organizational departments with their details and statistics
+      tags:
+        - Departments
+      parameters:
+        - name: includeStats
+          in: query
+          description: Include department statistics
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Successfully retrieved departments
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  departments:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Department'
+                  totalDepartments:
+                    type: integer
+        '500':
+          description: Failed to retrieve departments
+    post:
+      summary: Create new department
+      description: Create a new organizational department with specified configuration
+      tags:
+        - Departments
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDepartmentRequest'
+      responses:
+        '201':
+          description: Department created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  department:
+                    $ref: '#/components/schemas/Department'
+        '400':
+          description: Invalid department data
+        '409':
+          description: Department already exists
+    options:
+      summary: CORS preflight for departments
+      tags:
+        - CORS
+      responses:
+        '200':
+          description: CORS headers returned
+
+  /departments/{dept_id}:
+    get:
+      summary: Get department by ID
+      description: Retrieve detailed information about a specific department
+      tags:
+        - Departments
+      parameters:
+        - name: dept_id
+          in: path
+          required: true
+          description: Unique department identifier
+          schema:
+            type: string
+            example: "content-dept-001"
+      responses:
+        '200':
+          description: Department details retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Department'
+        '404':
+          description: Department not found
+    put:
+      summary: Update department
+      description: Update department information and configuration
+      tags:
+        - Departments
+      parameters:
+        - name: dept_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateDepartmentRequest'
+      responses:
+        '200':
+          description: Department updated successfully
+        '404':
+          description: Department not found
+        '400':
+          description: Invalid update data
+    options:
+      summary: CORS preflight for specific department
+      tags:
+        - CORS
+      parameters:
+        - name: dept_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: CORS headers returned
+
+  /improve/tasks:
+    get:
+      summary: Get improvement tasks
+      description: Retrieve tasks identified for process improvement and optimization
+      tags:
+        - Improvement
+      parameters:
+        - name: status
+          in: query
+          description: Filter tasks by status
+          schema:
+            type: string
+            enum: [pending, in_progress, completed, cancelled]
+        - name: priority
+          in: query
+          description: Filter tasks by priority level
+          schema:
+            type: string
+            enum: [low, medium, high, critical]
+        - name: category
+          in: query
+          description: Filter tasks by improvement category
+          schema:
+            type: string
+            enum: [performance, quality, automation, workflow, cost-optimization]
+      responses:
+        '200':
+          description: Improvement tasks retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ImprovementTask'
+                  summary:
+                    type: object
+                    properties:
+                      totalTasks:
+                        type: integer
+                      pendingTasks:
+                        type: integer
+                      completedTasks:
+                        type: integer
+                      estimatedImpact:
+                        type: string
+                        description: Estimated impact of improvements
+        '500':
+          description: Failed to retrieve improvement tasks
+    options:
+      summary: CORS preflight for improvement tasks
+      tags:
+        - CORS
+      responses:
+        '200':
+          description: CORS headers returned
+
+  /improve/task/done:
+    post:
+      summary: Mark improvement task as completed
+      description: Mark an improvement task as completed with results and impact metrics
+      tags:
+        - Improvement
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - taskId
+                - completedBy
+              properties:
+                taskId:
+                  type: string
+                  description: Unique task identifier
+                  example: "improve-001"
+                completedBy:
+                  type: string
+                  description: Person or agent who completed the task
+                  example: "admin-user"
+                completionNotes:
+                  type: string
+                  description: Detailed notes about task completion
+                  example: "Optimized content generation pipeline, reduced processing time by 40%"
+                impactMetrics:
+                  type: object
+                  properties:
+                    performanceGain:
+                      type: number
+                      description: Performance improvement percentage
+                    costSavings:
+                      type: number
+                      description: Cost savings achieved
+                    qualityImprovement:
+                      type: number
+                      description: Quality improvement score
+                attachments:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      filename:
+                        type: string
+                      url:
+                        type: string
+                      type:
+                        type: string
+                        enum: [document, image, report, data]
+      responses:
+        '200':
+          description: Task marked as completed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Task marked as completed"
+                  taskId:
+                    type: string
+                  completedAt:
+                    type: string
+                    format: date-time
+                  impactSummary:
+                    type: object
+        '400':
+          description: Invalid completion data
+        '404':
+          description: Task not found
+        '409':
+          description: Task already completed
+    options:
+      summary: CORS preflight for task completion
+      tags:
+        - CORS
+      responses:
+        '200':
+          description: CORS headers returned
+
+  /observability/metrics:
+    get:
+      summary: Get system observability metrics
+      description: Retrieve comprehensive system performance and observability metrics
+      tags:
+        - Observability
+      parameters:
+        - name: timeRange
+          in: query
+          description: Time range for metrics collection
+          schema:
+            type: string
+            enum: [1h, 6h, 24h, 7d, 30d, 90d]
+            default: 24h
+        - name: metricType
+          in: query
+          description: Type of metrics to retrieve
+          schema:
+            type: string
+            enum: [performance, usage, errors, costs, quality, all]
+            default: all
+        - name: granularity
+          in: query
+          description: Data point granularity
+          schema:
+            type: string
+            enum: [minute, hour, day]
+            default: hour
+        - name: format
+          in: query
+          description: Response format
+          schema:
+            type: string
+            enum: [json, csv, prometheus]
+            default: json
+      responses:
+        '200':
+          description: System metrics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemMetrics'
+            text/csv:
+              schema:
+                type: string
+                description: CSV formatted metrics data
+            text/plain:
+              schema:
+                type: string
+                description: Prometheus formatted metrics
+        '400':
+          description: Invalid query parameters
+        '500':
+          description: Failed to retrieve metrics
+    options:
+      summary: CORS preflight for system metrics
+      tags:
+        - CORS
+      responses:
+        '200':
+          description: CORS headers returned
+
+  /observability/agent-metrics:
+    get:
+      summary: Get agent-specific performance metrics
+      description: Retrieve detailed performance metrics for content creation agents
+      tags:
+        - Observability
+      parameters:
+        - name: agentName
+          in: query
+          description: Specific agent name to get metrics for
+          schema:
+            type: string
+            example: "content-writer-ai"
+        - name: timeRange
+          in: query
+          description: Time range for metrics
+          schema:
+            type: string
+            enum: [1h, 6h, 24h, 7d, 30d]
+            default: 24h
+        - name: includeComparison
+          in: query
+          description: Include comparison with other agents
+          schema:
+            type: boolean
+            default: false
+        - name: metricCategories
+          in: query
+          description: Comma-separated list of metric categories
+          schema:
+            type: string
+            example: "performance,quality,efficiency"
+      responses:
+        '200':
+          description: Agent metrics retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agentMetrics:
+                    $ref: '#/components/schemas/DetailedAgentMetrics'
+                  comparison:
+                    type: object
+                    properties:
+                      averagePerformance:
+                        type: number
+                      ranking:
+                        type: integer
+                      percentile:
+                        type: number
+                  trends:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        timestamp:
+                          type: string
+                          format: date-time
+                        value:
+                          type: number
+                        metric:
+                          type: string
+        '404':
+          description: Agent not found
+        '500':
+          description: Failed to retrieve agent metrics
+    options:
+      summary: CORS preflight for agent metrics
+      tags:
+        - CORS
+      responses:
+        '200':
+          description: CORS headers returned
+
+  /roles:
+    get:
+      summary: List all system roles
+      description: Retrieve all available roles with their permissions and hierarchy
+      tags:
+        - Roles
+      parameters:
+        - name: includePermissions
+          in: query
+          description: Include detailed permissions for each role
+          schema:
+            type: boolean
+            default: true
+        - name: level
+          in: query
+          description: Filter roles by access level
+          schema:
+            type: string
+            enum: [admin, manager, user, guest, system]
+      responses:
+        '200':
+          description: Roles retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  roles:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Role'
+                  roleHierarchy:
+                    type: object
+                    description: Role hierarchy and inheritance structure
+        '500':
+          description: Failed to retrieve roles
+    post:
+      summary: Create new system role
+      description: Create a new role with specified permissions and access level
+      tags:
+        - Roles
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRoleRequest'
+      responses:
+        '201':
+          description: Role created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  role:
+                    $ref: '#/components/schemas/Role'
+        '400':
+          description: Invalid role configuration
+        '409':
+          description: Role already exists
+    options:
+      summary: CORS preflight for roles
+      tags:
+        - CORS
+      responses:
+        '200':
+          description: CORS headers returned
+
+  /roles/{role_id}:
+    get:
+      summary: Get role by ID
+      description: Retrieve detailed information about a specific role
+      tags:
+        - Roles
+      parameters:
+        - name: role_id
+          in: path
+          required: true
+          description: Unique role identifier
+          schema:
+            type: string
+            example: "content-manager-role"
+      responses:
+        '200':
+          description: Role details retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Role'
+        '404':
+          description: Role not found
+    put:
+      summary: Update role configuration
+      description: Update role permissions, settings, and access level
+      tags:
+        - Roles
+      parameters:
+        - name: role_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRoleRequest'
+      responses:
+        '200':
+          description: Role updated successfully
+        '400':
+          description: Invalid update data
+        '404':
+          description: Role not found
+    options:
+      summary: CORS preflight for specific role
+      tags:
+        - CORS
+      parameters:
+        - name: role_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: CORS headers returned
+
+  /team/task:
+    post:
+      summary: Create and assign team task
+      description: Create a new task and assign it to the appropriate team or agent
+      tags:
+        - Tasks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskRequest'
+      responses:
+        '201':
+          description: Task created and assigned successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Task created and assigned successfully"
+                  runId:
+                    type: string
+                    description: Unique task execution identifier
+                    example: "task-run-12345"
+                  taskId:
+                    type: string
+                    description: Task identifier
+                  assignedTo:
+                    type: string
+                    description: Team or agent assigned to the task
+                  estimatedCompletion:
+                    type: string
+                    format: date-time
+                    description: Estimated completion time
+        '400':
+          description: Invalid task configuration
+        '503':
+          description: No available agents or teams for assignment
+    options:
+      summary: CORS preflight for team tasks
+      tags:
+        - CORS
+      responses:
+        '200':
+          description: CORS headers returned
+
+  /team/task/{run_id}:
+    get:
+      summary: Get task execution status
+      description: Retrieve detailed status and progress of a specific task execution
+      tags:
+        - Tasks
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          description: Unique task execution identifier
+          schema:
+            type: string
+            example: "task-run-12345"
+        - name: includeDetails
+          in: query
+          description: Include detailed execution logs and intermediate results
+          schema:
+            type: boolean
+            default: false
+        - name: includeLogs
+          in: query
+          description: Include execution logs
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Task status retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskExecutionStatus'
+        '404':
+          description: Task execution not found
+        '500':
+          description: Failed to retrieve task status
+    options:
+      summary: CORS preflight for specific task
+      tags:
+        - CORS
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: CORS headers returned
+
+  /teams:
+    get:
+      summary: List all content teams
+      description: Retrieve all content creation teams with their members and statistics
+      tags:
+        - Teams
+      parameters:
+        - name: status
+          in: query
+          description: Filter teams by status
+          schema:
+            type: string
+            enum: [active, inactive, maintenance]
+        - name: department
+          in: query
+          description: Filter teams by department
+          schema:
+            type: string
+        - name: includeMembers
+          in: query
+          description: Include team member details
+          schema:
+            type: boolean
+            default: true
+        - name: includeStats
+          in: query
+          description: Include team performance statistics
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Teams retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  teams:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Team'
+                  totalTeams:
+                    type: integer
+                  activeTeams:
+                    type: integer
+                  teamStats:
+                    type: object
+                    properties:
+                      averageTeamSize:
+                        type: number
+                      totalMembers:
+                        type: integer
+                      productivityScore:
+                        type: number
+        '500':
+          description: Failed to retrieve teams
+    post:
+      summary: Create new content team
+      description: Create a new content creation team with specified configuration and members
+      tags:
+        - Teams
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTeamRequest'
+      responses:
+        '201':
+          description: Team created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  team:
+                    $ref: '#/components/schemas/Team'
+        '400':
+          description: Invalid team configuration
+        '409':
+          description: Team name already exists
+    options:
+      summary: CORS preflight for teams
+      tags:
+        - CORS
+      responses:
+        '200':
+          description: CORS headers returned
+
+  /teams/{team_name}:
+    get:
+      summary: Get team by name
+      description: Retrieve detailed information about a specific team
+      tags:
+        - Teams
+      parameters:
+        - name: team_name
+          in: path
+          required: true
+          description: Unique team name
+          schema:
+            type: string
+            example: "content-writers-alpha"
+        - name: includePerformance
+          in: query
+          description: Include team performance metrics
+          schema:
+            type: boolean
+            default: false
+        - name: includeTaskHistory
+          in: query
+          description: Include recent task history
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Team details retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  team:
+                    $ref: '#/components/schemas/Team'
+                  performance:
+                    $ref: '#/components/schemas/TeamPerformance'
+                  taskHistory:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TaskHistoryItem'
+        '404':
+          description: Team not found
+    put:
+      summary: Update team configuration
+      description: Update team settings, members, and configuration
+      tags:
+        - Teams
+      parameters:
+        - name: team_name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTeamRequest'
+      responses:
+        '200':
+          description: Team updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  team:
+                    $ref: '#/components/schemas/Team'
+        '400':
+          description: Invalid update data
+        '404':
+          description: Team not found
+    delete:
+      summary: Delete team
+      description: Remove team from the system (requires confirmation)
+      tags:
+        - Teams
+      parameters:
+        - name: team_name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: force
+          in: query
+          description: Force deletion even if team has active tasks
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '204':
+          description: Team deleted successfully
+        '400':
+          description: Cannot delete team with active tasks
+        '404':
+          description: Team not found
+        '409':
+          description: Team has active tasks, use force=true to override
+    options:
+      summary: CORS preflight for specific team
+      tags:
+        - CORS
+      parameters:
+        - name: team_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: CORS headers returned
+
+  /teams/task/{run_id}:
+    get:
+      summary: Get team-specific task status
+      description: Retrieve task execution status with team-specific context and metrics
+      tags:
+        - Teams
+        - Tasks
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          description: Task execution identifier
+          schema:
+            type: string
+        - name: includeTeamMetrics
+          in: query
+          description: Include team performance metrics for this task
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Team task status retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  taskStatus:
+                    $ref: '#/components/schemas/TaskExecutionStatus'
+                  teamContext:
+                    type: object
+                    properties:
+                      teamName:
+                        type: string
+                      teamLead:
+                        type: string
+                      assignedMembers:
+                        type: array
+                        items:
+                          type: string
+                      teamEfficiency:
+                        type: number
+                        description: Team efficiency score for this task type
+                  collaboration:
+                    type: object
+                    properties:
+                      memberContributions:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            member:
+                              type: string
+                            contribution:
+                              type: number
+                            role:
+                              type: string
+        '404':
+          description: Task or team not found
+    options:
+      summary: CORS preflight for team task status
+      tags:
+        - CORS
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: CORS headers returned
+
+components:
+  securitySchemes:
+    CustomAuthorizer:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: Custom JWT-based authorization header
+
+  schemas:
+    Agent:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique agent identifier
+          example: "agent-001"
+        name:
+          type: string
+          description: Human-readable agent name
+          example: "content-writer-ai"
+        displayName:
+          type: string
+          description: Display name for UI
+          example: "AI Content Writer"
+        type:
+          type: string
+          enum: [writer, editor, researcher, designer, reviewer, seo-specialist, translator]
+          description: Agent specialization type
+        status:
+          type: string
+          enum: [active, inactive, busy, available, maintenance, error]
+          description: Current agent status
+        capabilities:
+          type: array
+          items:
+            type: string
+          description: List of agent capabilities
+          example: ["blog-writing", "seo-optimization", "content-research"]
+        configuration:
+          type: object
+          properties:
+            model:
+              type: string
+              description: AI model being used
+            temperature:
+              type: number
+              description: Creativity/randomness setting
+            maxTokens:
+              type: integer
+              description: Maximum tokens per generation
+            specializations:
+              type: array
+              items:
+                type: string
+        performance:
+          type: object
+          properties:
+            tasksCompleted:
+              type: integer
+            successRate:
+              type: number
+            averageQualityScore:
+              type: number
+            averageCompletionTime:
+              type: number
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+          description: User who created the agent
+        version:
+          type: string
+          description: Agent version
+          example: "1.2.3"
+
+    CreateAgentRequest:
+      type: object
+      required:
+        - name
+        - type
+        - capabilities
+      properties:
+        name:
+          type: string
+          pattern: '^[a-zA-Z0-9-_]+$'
+          description: Unique agent name (alphanumeric, hyphens, underscores only)
+          example: "content-writer-ai"
+        displayName:
+          type: string
+          description: Human-readable display name
+          example: "AI Content Writer"
+        type:
+          type: string
+          enum: [writer, editor, researcher, designer, reviewer, seo-specialist, translator]
+        description:
+          type: string
+          description: Agent description and purpose
+        capabilities:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: List of agent capabilities
+        configuration:
+          type: object
+          properties:
+            model:
+              type: string
+              default: "gpt-4"
+            temperature:
+              type: number
+              minimum: 0
+              maximum: 2
+              default: 0.7
+            maxTokens:
+              type: integer
+              minimum: 100
+              maximum: 4000
+              default: 2000
+        tags:
+          type: array
+          items:
+            type: string
+          description: Tags for categorization
+
+    UpdateAgentRequest:
+      type: object
+      properties:
+        displayName:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [active, inactive, maintenance]
+        capabilities:
+          type: array
+          items:
+            type: string
+        configuration:
+          type: object
+        tags:
+          type: array
+          items:
+            type: string
+
+    Department:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique department identifier
+        name:
+          type: string
+          description: Department name
+        description:
+          type: string
+          description: Department description and purpose
+        headCount:
+          type: integer
+          description: Number of people in department
+        budget:
+          type: object
+          properties:
+            allocated:
+              type: number
+              description: Allocated budget
+            spent:
+              type: number
+              description: Amount spent
+            remaining:
+              type: number
+              description: Remaining budget
+            currency:
+              type: string
+              default: "USD"
+        lead:
+          type: object
+          properties:
+            name:
+              type: string
+            email:
+              type: string
+            role:
+              type: string
+        teams:
+          type: array
+          items:
+            type: string
+          description: Teams belonging to this department
+        metrics:
+          type: object
+          properties:
+            productivity:
+              type: number
+            efficiency:
+              type: number
+            qualityScore:
+              type: number
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreateDepartmentRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        description:
+          type: string
+        leadEmail:
+          type: string
+          format: email
+        initialBudget:
+          type: number
+          minimum: 0
+
+    UpdateDepartmentRequest:
+      type: object
+      properties:
+        description:
+          type: string
+        budget:
+          type: object
+          properties:
+            allocated:
+              type: number
+        leadEmail:
+          type: string
+          format: email
+
+    ImprovementTask:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+          enum: [performance, quality, automation, workflow, cost-optimization, security]
+        priority:
+          type: string
+          enum: [low, medium, high, critical]
+        status:
+          type: string
+          enum: [pending, in_progress, completed, cancelled, on_hold]
+        estimatedImpact:
+          type: object
+          properties:
+            performanceGain:
+              type: number
+              description: Expected performance improvement percentage
+            costSavings:
+              type: number
+              description: Expected cost savings
+            timeReduction:
+              type: number
+              description: Expected time reduction percentage
+        assignedTo:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        dueDate:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        effort:
+          type: object
+          properties:
+            estimatedHours:
+              type: number
+            actualHours:
+              type: number
+        dependencies:
+          type: array
+          items:
+            type: string
+          description: Other task IDs this task depends on
+
+    SystemMetrics:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        timeRange:
+          type: string
+        performance:
+          type: object
+          properties:
+            averageResponseTime:
+              type: number
+              description: Average API response time in milliseconds
+            throughput:
+              type: object
+              properties:
+                requestsPerSecond:
+                  type: number
+                tasksPerHour:
+                  type: number
+            errorRate:
+              type: number
+              description: Error rate percentage
+            uptime:
+              type: number
+              description: System uptime percentage
+        usage:
+          type: object
+          properties:
+            activeUsers:
+              type: integer
+            totalRequests:
+              type: integer
+            dataProcessed:
+              type: object
+              properties:
+                volume:
+                  type: number
+                unit:
+                  type: string
+                  example: "GB"
+            resourceUtilization:
+              type: object
+              properties:
+                cpu:
+                  type: number
+                memory:
+                  type: number
+                storage:
+                  type: number
+        quality:
+          type: object
+          properties:
+            averageContentQuality:
+              type: number
+              description: Average content quality score (1-10)
+            userSatisfaction:
+              type: number
+              description: User satisfaction score (1-10)
+            taskSuccessRate:
+              type: number
+              description: Task success rate percentage
+        costs:
+          type: object
+          properties:
+            totalCost:
+              type: number
+            costPerTask:
+              type: number
+            costBreakdown:
+              type: object
+              properties:
+                compute:
+                  type: number
+                storage:
+                  type: number
+                api:
+                  type: number
+                other:
+                  type: number
+        trends:
+          type: array
+          items:
+            type: object
+            properties:
+              timestamp:
+                type: string
+                format: date-time
+              metrics:
+                type: object
+
+    DetailedAgentMetrics:
+      type: object
+      properties:
+        agentId:
+          type: string
+        agentName:
+          type: string
+        timeRange:
+          type: string
+        performance:
+          type: object
+          properties:
+            tasksCompleted:
+              type: integer
+            tasksInProgress:
+              type: integer
+            tasksFailed:
+              type: integer
+            averageCompletionTime:
+              type: number
+              description: Average task completion time in minutes
+            successRate:
+              type: number
+              description: Task success rate percentage
+            throughput:
+              type: number
+              description: Tasks completed per hour
+        quality:
+          type: object
+          properties:
+            averageQualityScore:
+              type: number
+              description: Average quality score (1-10)
+            qualityTrend:
+              type: string
+              enum: [improving, stable, declining]
+            userRatings:
+              type: object
+              properties:
+                average:
+                  type: number
+                count:
+                  type: integer
+                distribution:
+                  type: object
+        efficiency:
+          type: object
+          properties:
+            resourceUtilization:
+              type: number
+              description: Resource utilization percentage
+            costPerTask:
+              type: number
+            energyEfficiency:
+              type: number
+        specializations:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+              proficiency:
+                type: number
+              tasksCompleted:
+                type: integer
+        errors:
+          type: object
+          properties:
+            totalErrors:
+              type: integer
+            errorRate:
+              type: number
+            commonErrors:
+              type: array
+              items:
+                type: object
+                properties:
+                  type:
+                    type: string
+                  count:
+                    type: integer
+                  lastOccurrence:
+                    type: string
+                    format: date-time
+
+    AgentMetrics:
+      type: object
+      properties:
+        agentName:
+          type: string
+        tasksCompleted:
+          type: integer
+        averageCompletionTime:
+          type: number
+        successRate:
+          type: number
+        currentLoad:
+          type: integer
+        qualityScore:
+          type: number
+
+    Role:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        level:
+          type: string
+          enum: [admin, manager, user, guest, system]
+        permissions:
+          type: array
+          items:
+            type: object
+            properties:
+              resource:
+                type: string
+                description: Resource type (agents, teams, tasks, etc.)
+              actions:
+                type: array
+                items:
+                  type: string
+                  enum: [create, read, update, delete, execute, manage]
+              conditions:
+                type: object
+                description: Additional conditions for permission
+        inheritance:
+          type: array
+          items:
+            type: string
+          description: Roles this role inherits from
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        isSystem:
+          type: boolean
+          description: Whether this is a system-defined role
+
+    CreateRoleRequest:
+      type: object
+      required:
+        - name
+        - level
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 50
+        description:
+          type: string
+        level:
+          type: string
+          enum: [admin, manager, user, guest]
+        permissions:
+          type: array
+          items:
+            type: object
+            properties:
+              resource:
+                type: string
+              actions:
+                type: array
+                items:
+                  type: string
+        inheritance:
+          type: array
+          items:
+            type: string
+
+    UpdateRoleRequest:
+      type: object
+      properties:
+        description:
+          type: string
+        permissions:
+          type: array
+          items:
+            type: object
+        inheritance:
+          type: array
+          items:
+            type: string
+
+    CreateTaskRequest:
+      type: object
+      required:
+        - title
+        - description
+        - type
+      properties:
+        title:
+          type: string
+          minLength: 5
+          maxLength: 200
+        description:
+          type: string
+          minLength: 10
+        type:
+          type: string
+          enum: [content-creation, content-editing, research, design, review, seo-optimization, translation]
+        priority:
+          type: string
+          enum: [low, medium, high, urgent]
+          default: medium
+        assignTo:
+          type: object
+          properties:
+            type:
+              type: string
+              enum: [agent, team, auto]
+              default: auto
+            target:
+              type: string
+              description: Specific agent name or team name
+        requirements:
+          type: object
+          properties:
+            wordCount:
+              type: integer
+            tone:
+              type: string
+              enum: [professional, casual, technical, creative, formal]
+            audience:
+              type: string
+            keywords:
+              type: array
+              items:
+                type: string
+            format:
+              type: string
+              enum: [article, blog-post, social-media, email, documentation, marketing-copy]
+        deadline:
+          type: string
+          format: date-time
+        attachments:
+          type: array
+          items:
+            type: object
+            properties:
+              filename:
+                type: string
+              url:
+                type: string
+              type:
+                type: string
+        metadata:
+          type: object
+          description: Additional task-specific metadata
+
+    TaskExecutionStatus:
+      type: object
+      properties:
+        runId:
+          type: string
+        taskId:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, completed, failed, cancelled, paused]
+        progress:
+          type: object
+          properties:
+            percentage:
+              type: integer
+              minimum: 0
+              maximum: 100
+            currentStep:
+              type: string
+            totalSteps:
+              type: integer
+            completedSteps:
+              type: integer
+        assignedTo:
+          type: object
+          properties:
+            type:
+              type: string
+              enum: [agent, team]
+            name:
+              type: string
+            id:
+              type: string
+        execution:
+          type: object
+          properties:
+            startedAt:
+              type: string
+              format: date-time
+            estimatedCompletion:
+              type: string
+              format: date-time
+            actualCompletion:
+              type: string
+              format: date-time
+            duration:
+              type: number
+              description: Execution duration in seconds
+        result:
+          type: object
+          properties:
+            output:
+              type: string
+              description: Task output/result
+            quality:
+              type: object
+              properties:
+                score:
+                  type: number
+                metrics:
+                  type: object
+            artifacts:
+              type: array
+              items:
+                type: object
+                properties:
+                  type:
+                    type: string
+                  url:
+                    type: string
+                  filename:
+                    type: string
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              type: object
+            timestamp:
+              type: string
+              format: date-time
+        logs:
+          type: array
+          items:
+            type: object
+            properties:
+              timestamp:
+                type: string
+                format: date-time
+              level:
+                type: string
+                enum: [debug, info, warn, error]
+              message:
+                type: string
+              source:
+                type: string
+
+    Team:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [active, inactive, maintenance]
+        department:
+          type: string
+        lead:
+          type: object
+          properties:
+            name:
+              type: string
+            email:
+              type: string
+            role:
+              type: string
+        members:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              type:
+                type: string
+                enum: [agent, human]
+              role:
+                type: string
+              status:
+                type: string
+              joinedAt:
+                type: string
+                format: date-time
+        capabilities:
+          type: array
+          items:
+            type: string
+        configuration:
+          type: object
+          properties:
+            maxConcurrentTasks:
+              type: integer
+            workingHours:
+              type: object
+              properties:
+                start:
+                  type: string
+                end:
+                  type: string
+                timezone:
+                  type: string
+            specializations:
+              type: array
+              items:
+                type: string
+        performance:
+          type: object
+          properties:
+            tasksCompleted:
+              type: integer
+            averageCompletionTime:
+              type: number
+            successRate:
+              type: number
+            qualityScore:
+              type: number
+            efficiency:
+              type: number
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreateTeamRequest:
+      type: object
+      required:
+        - name
+        - description
+      properties:
+        name:
+          type: string
+          pattern: '^[a-zA-Z0-9-_]+$'
+          minLength: 2
+          maxLength: 50
+        displayName:
+          type: string
+        description:
+          type: string
+        department:
+          type: string
+        leadEmail:
+          type: string
+          format: email
+        initialMembers:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              role:
+                type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+        configuration:
+          type: object
+
+    UpdateTeamRequest:
+      type: object
+      properties:
+        displayName:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [active, inactive, maintenance]
+        leadEmail:
+          type: string
+          format: email
+        members:
+          type: array
+          items:
+            type: object
+        capabilities:
+          type: array
+          items:
+            type: string
+        configuration:
+          type: object
+
+    TeamPerformance:
+      type: object
+      properties:
+        teamName:
+          type: string
+        timeRange:
+          type: string
+        metrics:
+          type: object
+          properties:
+            tasksCompleted:
+              type: integer
+            tasksInProgress:
+              type: integer
+            averageCompletionTime:
+              type: number
+            successRate:
+              type: number
+            qualityScore:
+              type: number
+            efficiency:
+              type: number
+            collaboration:
+              type: object
+              properties:
+                score:
+                  type: number
+                interactions:
+                  type: integer
+        memberContributions:
+          type: array
+          items:
+            type: object
+            properties:
+              memberId:
+                type: string
+              memberName:
+                type: string
+              tasksCompleted:
+                type: integer
+              contribution:
+                type: number
+              qualityScore:
+                type: number
+
+    TaskHistoryItem:
+      type: object
+      properties:
+        taskId:
+          type: string
+        runId:
+          type: string
+        title:
+          type: string
+        type:
+          type: string
+        status:
+          type: string
+        assignedTo:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        duration:
+          type: number
+        qualityScore:
+          type: number
+        success:
+          type: boolean
+
+    Pagination:
+      type: object
+      properties:
+        limit:
+          type: integer
+        offset:
+          type: integer
+        total:
+          type: integer
+        hasMore:
+          type: boolean
+        nextOffset:
+          type: integer
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error type or code
+        message:
+          type: string
+          description: Human-readable error message
+        details:
+          type: object
+          description: Additional error details
+        timestamp:
+          type: string
+          format: date-time
+        requestId:
+          type: string
+          description: Request identifier for tracking
+
+tags:
+  - name: Agents
+    description: Content creation agent management
+  - name: Teams
+    description: Content team management and collaboration
+  - name: Departments
+    description: Organizational department management
+  - name: Roles
+    description: Role and permission management
+  - name: Tasks
+    description: Task creation and execution management
+  - name: Improvement
+    description: Process improvement and optimization
+  - name: Observability
+    description: System monitoring and metrics
+  - name: CORS
+    description: Cross-Origin Resource Sharing support
+
+externalDocs:
+  description: Find more info about Tarun's Content Team API
+  url: https://tarunraja.info/docs/content-team-api
