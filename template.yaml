@@ -5,24 +5,13 @@ Description: >
   via AWS Bedrock, DataDictionary MCP, and mcp-observatory.
 
 # ---------------------------------------------------------------------------
-# Parameters — populated by GitHub Actions from tarun-teamweave-shared outputs
+# Parameters — all have defaults; no required overrides at deploy time
 # ---------------------------------------------------------------------------
 Parameters:
-  LambdaSubnetIds:
-    Type: CommaDelimitedList
-    Description: Private subnet IDs from tarun-teamweave-shared (LambdaSubnetIds output)
-
-  VpcId:
-    Type: AWS::EC2::VPC::Id
-    Description: VPC ID from tarun-teamweave-shared (VpcId output)
-
-  ObservatoryMetricsTableName:
+  SharedStackName:
     Type: String
-    Description: Shared observatory metrics DynamoDB table name (ObservatoryMetricsTableName output)
-
-  ObservatoryMetricsTableArn:
-    Type: String
-    Description: Shared observatory metrics DynamoDB table ARN (ObservatoryMetricsTableArn output)
+    Default: tarun-teamweave-shared
+    Description: Name of the shared infrastructure CloudFormation stack to import VPC, subnet, and observatory table values from
 
   ObservatorySecretKey:
     Type: String
@@ -40,6 +29,11 @@ Parameters:
     Default: "anthropic.claude-3-haiku-20240307-v1:0"
     Description: Bedrock model ID for the Converse API agent
 
+  EnricherModelId:
+    Type: String
+    Default: "anthropic.claude-3-haiku-20240307-v1:0"
+    Description: Bedrock model ID for the enricher / swagger-processor agent
+
   DataDictionaryUrl:
     Type: String
     Default: "https://ft5yitoykshqz73sejd7miatze0syqds.lambda-url.us-east-1.on.aws/"
@@ -56,7 +50,7 @@ Globals:
     MemorySize: 512
     Timeout: 60
     VpcConfig:
-      SubnetIds: !Ref LambdaSubnetIds
+      SubnetIds: !Split [",", !GetAtt SharedStackLookup.LambdaSubnetIds]
       SecurityGroupIds:
         - !Ref LambdaSecurityGroup
     Environment:
@@ -66,11 +60,11 @@ Globals:
         META_TABLE_NAME: !Ref ApiMetaTable
         PROPOSALS_TABLE_NAME: !Ref ProposalsTable
         API_SPECS_BUCKET: !Ref ApiSpecsBucket
-        OBSERVATORY_METRICS_TABLE: !Ref ObservatoryMetricsTableName
+        OBSERVATORY_METRICS_TABLE: !GetAtt SharedStackLookup.ObservatoryMetricsTableName
         OBSERVATORY_SECRET_KEY: !Ref ObservatorySecretKey
         OBSERVATORY_BLOCK_THRESHOLD: !Ref ObservatoryBlockThreshold
         BEDROCK_MODEL_ID: !Ref BedrockModelId
-        ENRICHER_MODEL_ID: "anthropic.claude-3-haiku-20240307-v1:0"
+        ENRICHER_MODEL_ID: !Ref EnricherModelId
         DATA_DICTIONARY_URL: !Ref DataDictionaryUrl
         TOOLWEAVE_LOG_CONVERSE_MESSAGES: "true"
         TOOLWEAVE_LOG_CONVERSE_RAW_RESPONSES: "true"
@@ -80,12 +74,95 @@ Globals:
 # ---------------------------------------------------------------------------
 Resources:
 
+  # ---- Custom resource: resolve shared stack outputs + derive VPC ID ----
+  # Reads LambdaSubnetIds, ObservatoryMetrics table, and VpcId (derived from
+  # the first subnet) out of the shared infrastructure stack at deploy time,
+  # so none of those values need to be passed as explicit parameters.
+  SharedStackLookupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SharedStackLookupPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: cloudformation:DescribeStacks
+                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${SharedStackName}/*"
+              - Effect: Allow
+                Action: ec2:DescribeSubnets
+                Resource: "*"
+
+  SharedStackLookupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt SharedStackLookupRole.Arn
+      Runtime: python3.12
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import boto3, json, urllib.request
+
+          def send(event, context, status, data={}, reason=""):
+              body = json.dumps({
+                  "Status": status,
+                  "Reason": reason or f"See CloudWatch: {context.log_stream_name}",
+                  "PhysicalResourceId": event.get("PhysicalResourceId", context.log_stream_name),
+                  "StackId": event["StackId"],
+                  "RequestId": event["RequestId"],
+                  "LogicalResourceId": event["LogicalResourceId"],
+                  "Data": data,
+              }).encode()
+              req = urllib.request.Request(
+                  event["ResponseURL"], data=body,
+                  headers={"content-type": "", "content-length": str(len(body))},
+                  method="PUT")
+              urllib.request.urlopen(req)
+
+          def handler(event, context):
+              if event["RequestType"] == "Delete":
+                  send(event, context, "SUCCESS")
+                  return
+              try:
+                  stack_name = event["ResourceProperties"]["SharedStackName"]
+                  cfn = boto3.client("cloudformation")
+                  outputs = {o["OutputKey"]: o["OutputValue"]
+                             for o in cfn.describe_stacks(StackName=stack_name)["Stacks"][0].get("Outputs", [])}
+                  subnet_ids = outputs["LambdaSubnetIds"]
+                  first_subnet = subnet_ids.split(",")[0].strip()
+                  ec2 = boto3.client("ec2")
+                  vpc_id = ec2.describe_subnets(SubnetIds=[first_subnet])["Subnets"][0]["VpcId"]
+                  send(event, context, "SUCCESS", {
+                      "LambdaSubnetIds": subnet_ids,
+                      "VpcId": vpc_id,
+                      "ObservatoryMetricsTableName": outputs["ObservatoryMetricsTableName"],
+                      "ObservatoryMetricsTableArn": outputs["ObservatoryMetricsTableArn"],
+                  })
+              except Exception as exc:
+                  send(event, context, "FAILED", reason=str(exc))
+
+  SharedStackLookup:
+    Type: Custom::SharedStackLookup
+    Properties:
+      ServiceToken: !GetAtt SharedStackLookupFunction.Arn
+      SharedStackName: !Ref SharedStackName
+
   # ---- Security Group ----
   LambdaSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: ToolWeave Lambda - outbound HTTPS only
-      VpcId: !Ref VpcId
+      VpcId: !GetAtt SharedStackLookup.VpcId
       SecurityGroupEgress:
         - IpProtocol: tcp
           FromPort: 443
@@ -263,7 +340,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - dynamodb:PutItem
-                Resource: !Ref ObservatoryMetricsTableArn
+                Resource: !GetAtt SharedStackLookup.ObservatoryMetricsTableArn
               # S3 — ARN computed from the deterministic bucket name to avoid
               # circular dependency: ApiSpecsBucket -> SwaggerProcessorFunction
               # -> ToolWeaveLambdaRole -> ApiSpecsBucket
