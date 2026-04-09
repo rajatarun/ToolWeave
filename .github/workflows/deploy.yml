@@ -36,54 +36,6 @@ jobs:
           python-version: "3.12"
 
       # ------------------------------------------------------------------
-      # Read outputs from the shared infrastructure stack
-      # ------------------------------------------------------------------
-      - name: Read tarun-teamweave-shared stack outputs
-        id: shared
-        run: |
-          OUTPUTS=$(aws cloudformation describe-stacks \
-            --stack-name tarun-teamweave-shared \
-            --query "Stacks[0].Outputs" \
-            --output json)
-
-          get_output() {
-            echo "$OUTPUTS" | jq -r ".[] | select(.OutputKey==\"$1\") | .OutputValue"
-          }
-
-          SUBNET_IDS=$(get_output "LambdaSubnetIds")
-          OBS_TABLE=$(get_output "ObservatoryMetricsTableName")
-          OBS_TABLE_ARN=$(get_output "ObservatoryMetricsTableArn")
-
-          # Validate required outputs
-          if [ -z "$SUBNET_IDS" ]; then
-            echo "ERROR: LambdaSubnetIds output missing from tarun-teamweave-shared stack."
-            echo "Outputs: $OUTPUTS"
-            exit 1
-          fi
-
-          # Derive VPC ID from the first subnet (VpcId is not exported by the shared stack)
-          FIRST_SUBNET=$(echo "$SUBNET_IDS" | cut -d',' -f1)
-          VPC_ID=$(aws ec2 describe-subnets \
-            --subnet-ids "$FIRST_SUBNET" \
-            --query "Subnets[0].VpcId" \
-            --output text)
-
-          if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "None" ]; then
-            echo "ERROR: Could not determine VPC ID from subnet $FIRST_SUBNET."
-            exit 1
-          fi
-
-          echo "subnet_ids=$SUBNET_IDS"       >> "$GITHUB_OUTPUT"
-          echo "vpc_id=$VPC_ID"               >> "$GITHUB_OUTPUT"
-          echo "obs_table=$OBS_TABLE"         >> "$GITHUB_OUTPUT"
-          echo "obs_table_arn=$OBS_TABLE_ARN" >> "$GITHUB_OUTPUT"
-
-          echo "Shared stack outputs loaded."
-          echo "  SubnetIds: $SUBNET_IDS"
-          echo "  VpcId:     $VPC_ID (derived from $FIRST_SUBNET)"
-          echo "  ObsTable:  $OBS_TABLE"
-
-      # ------------------------------------------------------------------
       # Validate (catches CFN/SAM syntax errors before build)
       # ------------------------------------------------------------------
       - name: SAM Validate
@@ -96,27 +48,25 @@ jobs:
         run: sam build
 
       # ------------------------------------------------------------------
-      # Deploy
+      # Deploy — VPC, subnet, and observatory table values are resolved
+      # inside the template via the SharedStackLookup custom resource.
+      # Only the observatory secret key needs an external override.
       # ------------------------------------------------------------------
       - name: SAM Deploy
         env:
           OBSERVATORY_SECRET_KEY: ${{ secrets.OBSERVATORY_SECRET_KEY }}
         run: |
-          # Build parameter-overrides string; only include ObservatorySecretKey
-          # when the GitHub secret is actually set (non-empty), otherwise let
-          # the template's default value ("change-me-in-production") apply.
-          PARAM_OVERRIDES="LambdaSubnetIds=\"${{ steps.shared.outputs.subnet_ids }}\""
-          PARAM_OVERRIDES+=" VpcId=\"${{ steps.shared.outputs.vpc_id }}\""
-          PARAM_OVERRIDES+=" ObservatoryMetricsTableName=\"${{ steps.shared.outputs.obs_table }}\""
-          PARAM_OVERRIDES+=" ObservatoryMetricsTableArn=\"${{ steps.shared.outputs.obs_table_arn }}\""
+          # Only pass ObservatorySecretKey when the GitHub secret is set;
+          # all other parameters have defaults baked into the template.
+          PARAM_OVERRIDES=""
           if [ -n "$OBSERVATORY_SECRET_KEY" ]; then
-            PARAM_OVERRIDES+=" ObservatorySecretKey=\"$OBSERVATORY_SECRET_KEY\""
+            PARAM_OVERRIDES="ObservatorySecretKey=\"$OBSERVATORY_SECRET_KEY\""
           fi
 
           sam deploy \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
-            --parameter-overrides "$PARAM_OVERRIDES"
+            ${PARAM_OVERRIDES:+--parameter-overrides "$PARAM_OVERRIDES"}
 
       # ------------------------------------------------------------------
       # Print Function URL for easy reference
