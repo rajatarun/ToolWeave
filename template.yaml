@@ -185,6 +185,8 @@ Resources:
   # up the Lambda trigger with no reference back to the bucket resource.
   ApiSpecsBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       BucketName: !Sub "toolweave-api-specs-${AWS::AccountId}-${AWS::Region}"
       VersioningConfiguration:
