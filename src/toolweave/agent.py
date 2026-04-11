@@ -22,7 +22,7 @@ from typing import Any
 
 import boto3
 
-from . import catalog_search, data_dictionary_client
+from . import catalog_search, data_dictionary_client, observatory as _obs
 from .models import EndpointEntry, FieldMapping, PreToolResponse
 
 logger = logging.getLogger(__name__)
@@ -207,7 +207,54 @@ async def run_agent(
     catalog: list[EndpointEntry],
     dd_context: str,
 ) -> PreToolResponse:
-    """Run the Bedrock Converse agent loop for one user turn.
+    """Run the Bedrock Converse agent loop wrapped with InvocationWrapperAPI telemetry.
+
+    Spans the full multi-turn loop; emits a policy decision (allow/review/block)
+    and exports metrics to the shared OBSERVATORY_METRICS DynamoDB table.
+    """
+
+    async def _inner(**kwargs: Any) -> PreToolResponse:
+        return await _run_agent_inner(**kwargs)
+
+    result = await _obs.get_agent_wrapper().invoke(
+        source="agent",
+        model=BEDROCK_MODEL_ID,
+        prompt=user_message,
+        input_payload={"session_id": session_id, "catalog_size": len(catalog)},
+        call=_inner,
+        user_message=user_message,
+        session_id=session_id,
+        catalog=catalog,
+        dd_context=dd_context,
+    )
+
+    logger.info(
+        "Agent wrapper session_id=%s decision=%s cost_usd=%.4f "
+        "hallucination_risk=%s composite_risk=%s",
+        session_id,
+        result.decision.action,
+        result.span.cost_usd or 0.0,
+        result.span.hallucination_risk_level,
+        result.span.composite_risk_level,
+    )
+
+    if result.decision.action == "block":
+        return PreToolResponse(
+            session_id=session_id,
+            status="error",
+            error=f"Agent invocation blocked by observatory: {result.decision.reason}",
+        )
+
+    return result.output
+
+
+async def _run_agent_inner(
+    user_message: str,
+    session_id: str,
+    catalog: list[EndpointEntry],
+    dd_context: str,
+) -> PreToolResponse:
+    """Internal Bedrock Converse agent loop for one user turn.
 
     Maintains conversation history in _sessions[session_id].
     Returns a PreToolResponse with status 'ready', 'needs_input', 'no_match', or 'error'.
@@ -234,9 +281,27 @@ async def run_agent(
         _log_converse_request(session_id, _iteration, history)
 
         try:
-            response = await loop.run_in_executor(
-                None, lambda kw=converse_kwargs: _bedrock.converse(**kw)
+            kw = converse_kwargs
+
+            async def _converse() -> dict[str, Any]:
+                return await loop.run_in_executor(None, lambda: _bedrock.converse(**kw))
+
+            model_result = await _obs.get_model_wrapper().invoke(
+                source="model",
+                model=BEDROCK_MODEL_ID,
+                prompt=json.dumps(history[-1], default=str),
+                input_payload={"modelId": kw.get("modelId", ""), "iteration": _iteration},
+                call=_converse,
             )
+            logger.info(
+                "Model call session_id=%s iteration=%s decision=%s cost_usd=%.4f hallucination_risk=%s",
+                session_id,
+                _iteration,
+                model_result.decision.action,
+                model_result.span.cost_usd or 0.0,
+                model_result.span.hallucination_risk_level,
+            )
+            response = model_result.output
         except Exception as exc:
             logger.exception(
                 "Agent Bedrock converse failed session_id=%s iteration=%s",
