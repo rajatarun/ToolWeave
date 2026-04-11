@@ -11,6 +11,10 @@ from typing import Any, AsyncGenerator
 import boto3
 
 from mcp_observatory import ToolProposer
+from mcp_observatory.core.context import TraceContext
+from mcp_observatory.core.wrapper_api import InvocationWrapperAPI, WrapperPolicy
+from mcp_observatory.exporters.base import Exporter
+from mcp_observatory.instrument import instrument_wrapper_api
 from mcp_observatory.proposal_commit import CommitTokenManager
 from mcp_observatory.proposal_commit.proposer import ProposalConfig
 from mcp_observatory.proposal_commit.storage import InMemoryStorage
@@ -44,10 +48,81 @@ _verifier = CommitVerifier(
 
 # ---------------------------------------------------------------------------
 # Shared observability metrics — DynamoDB (tarun-teamweave-shared)
+# Table name resolved at deploy time from the shared CloudFormation stack
+# output "ObservatoryMetricsTableName" via SharedStackLookup custom resource.
 # ---------------------------------------------------------------------------
 
 _ddb = boto3.resource("dynamodb", region_name=os.environ.get("AWS_REGION", "us-east-1"))
 _metrics_table = _ddb.Table(OBSERVATORY_METRICS_TABLE)
+
+
+class DynamoDBSpanExporter(Exporter):
+    """Exports InvocationWrapperAPI span telemetry to the shared OBSERVATORY_METRICS table.
+
+    The table is provisioned in the shared CloudFormation stack (tarun-teamweave-shared)
+    and its name is injected at deploy time via the OBSERVATORY_METRICS_TABLE env var,
+    resolved by the SharedStackLookup custom resource from the stack output
+    "ObservatoryMetricsTableName".
+    """
+
+    async def export(self, context: TraceContext) -> None:
+        try:
+            ts = datetime.now(timezone.utc).isoformat()
+            _metrics_table.put_item(
+                Item={
+                    "PK": f"WRAPPER#{context.method or 'unknown'}",
+                    "SK": ts,
+                    "service": "toolweave",
+                    "source": context.method or "unknown",
+                    "model": context.model or "",
+                    "trace_id": context.trace_id,
+                    "prompt_tokens": context.prompt_tokens or 0,
+                    "completion_tokens": context.completion_tokens or 0,
+                    "cost_usd": Decimal(str(round(context.cost_usd or 0.0, 6))),
+                    "hallucination_risk_level": context.hallucination_risk_level or "unknown",
+                    "hallucination_risk_score": Decimal(
+                        str(round(context.hallucination_risk_score or 0.0, 4))
+                    ),
+                    "composite_risk_level": context.composite_risk_level or "unknown",
+                    "composite_risk_score": Decimal(
+                        str(round(context.composite_risk_score or 0.0, 4))
+                    ),
+                    "policy_decision": context.policy_decision or "allow",
+                    "fallback_reason": context.fallback_reason or "",
+                }
+            )
+        except Exception:
+            pass  # never let metrics writes crash the main flow
+
+
+# ---------------------------------------------------------------------------
+# InvocationWrapperAPI singletons — agent-level and model-level telemetry
+# Span metrics are exported to the shared OBSERVATORY_METRICS DynamoDB table.
+# ---------------------------------------------------------------------------
+
+_span_exporter = DynamoDBSpanExporter()
+
+_agent_wrapper: InvocationWrapperAPI = instrument_wrapper_api(
+    "toolweave-agent",
+    exporter=_span_exporter,
+    policy=WrapperPolicy(max_cost_usd=1.0, max_latency_ms=60_000.0),
+)
+
+_model_wrapper: InvocationWrapperAPI = instrument_wrapper_api(
+    "toolweave-model",
+    exporter=_span_exporter,
+    policy=WrapperPolicy(max_cost_usd=0.25, max_latency_ms=20_000.0),
+)
+
+
+def get_agent_wrapper() -> InvocationWrapperAPI:
+    """Return the agent-level InvocationWrapperAPI singleton."""
+    return _agent_wrapper
+
+
+def get_model_wrapper() -> InvocationWrapperAPI:
+    """Return the model-level InvocationWrapperAPI singleton."""
+    return _model_wrapper
 
 
 def _write_invocation_metric(
