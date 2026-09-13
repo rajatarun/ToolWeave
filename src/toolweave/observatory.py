@@ -91,6 +91,22 @@ def _warn_metrics_write_failed(pk: str, exc: BaseException) -> None:
         pass
 
 
+def _wrapper_operation(method: str | None) -> str:
+    """Map a wrapper TraceContext's `method` to a readable `operation` value.
+
+    mcp_observatory sets ``span.method = f"wrapper/{source}"`` (see
+    ``InvocationWrapperAPI._execute_with_span``), which is also this writer's
+    pk discriminator and is already stored verbatim in the `source` attribute.
+    Copying it into `operation` too would just be the pk restated, so
+    "wrapper/agent" / "wrapper/model" become the call kind they name instead:
+    "invoke_agent" / "invoke_model". An unrecognized or missing method falls
+    back to the raw label (still non-empty, satisfying I8) rather than a
+    silently wrong guess.
+    """
+    label = (method or "unknown").split("/", 1)[-1]
+    return f"invoke_{label}" if label in ("agent", "model") else label
+
+
 class DynamoDBSpanExporter(Exporter):
     """Exports InvocationWrapperAPI span telemetry to the shared OBSERVATORY_METRICS table.
 
@@ -126,6 +142,15 @@ class DynamoDBSpanExporter(Exporter):
                     "pk": pk,
                     "sk": f"{ts}#{context.trace_id}",
                     "timestamp": ts,
+                    # SpanTimelineIndex partition key (contract v2.0.0, I6/I7).
+                    # Sliced from `ts` above so the two can never disagree.
+                    "span_date": ts[:10],
+                    # Contract v2.0.0 I8. `context.method` (also the pk
+                    # discriminator, already carried verbatim in `source`
+                    # below) is "wrapper/{source}" — e.g. "wrapper/agent" —
+                    # so it is remapped to a readable call kind rather than
+                    # repeated here unchanged.
+                    "operation": _wrapper_operation(context.method),
                     "ttl": Decimal(int(time.time()) + _TTL_SECONDS),
                     "service": "toolweave",
                     "source": context.method or "unknown",
@@ -198,6 +223,15 @@ def _write_invocation_metric(
                 "pk": pk,
                 "sk": f"{ts}#{uuid.uuid4().hex}",
                 "timestamp": ts,
+                # SpanTimelineIndex partition key (contract v2.0.0, I6/I7).
+                # Sliced from `ts` above so the two can never disagree.
+                "span_date": ts[:10],
+                # Contract v2.0.0 I8. Unlike the WRAPPER# writer above,
+                # tool_name ("pre_tool" / "post_tool" / "commit_api_call" /
+                # "reload_catalog" — one of the four MCP tools) already names
+                # the kind of call this is, so it is reused verbatim rather
+                # than remapped.
+                "operation": tool_name,
                 "ttl": Decimal(int(time.time()) + _TTL_SECONDS),
                 "tool_name": tool_name,
                 "service": "toolweave",
