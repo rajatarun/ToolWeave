@@ -10,40 +10,36 @@ from typing import Any, AsyncGenerator
 
 import boto3
 
-from mcp_observatory import ToolProposer
+from mcp_observatory.aws import build_gate
 from mcp_observatory.core.context import TraceContext
 from mcp_observatory.core.wrapper_api import InvocationWrapperAPI, WrapperPolicy
 from mcp_observatory.exporters.base import Exporter
 from mcp_observatory.instrument import instrument_wrapper_api
-from mcp_observatory.proposal_commit import CommitTokenManager
-from mcp_observatory.proposal_commit.proposer import ProposalConfig
-from mcp_observatory.proposal_commit.storage import InMemoryStorage
-from mcp_observatory.proposal_commit.verifier import CommitVerifier
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-_SECRET_KEY = os.environ.get("OBSERVATORY_SECRET_KEY", "change-me-in-production")
-_BLOCK_THRESHOLD = float(os.environ.get("OBSERVATORY_BLOCK_THRESHOLD", "0.45"))
 OBSERVATORY_METRICS_TABLE = os.environ.get(
     "OBSERVATORY_METRICS_TABLE", "tarun-teamweave-shared-OBSERVATORY_METRICS"
 )
 
 # ---------------------------------------------------------------------------
 # mcp-observatory singletons (Lambda warm-container reuse)
+#
+# Wired via mcp_observatory.aws.build_gate (mcp-observatory>=0.3.0) instead of
+# hand-building InMemoryStorage/CommitTokenManager/ToolProposer/CommitVerifier:
+# the wiring was identical to the library's, and build_gate resolves the HMAC
+# secret through mcp_observatory.utils.secrets.resolve_secret, which raises
+# InsecureDefaultSecretError at construction time instead of silently falling
+# back to a hardcoded default (previously "change-me-in-production" here).
+# Set OBSERVATORY_SECRET_KEY in every deployed environment; set
+# MCP_OBSERVATORY_ALLOW_DEV_SECRET=1 for local runs and tests only.
 # ---------------------------------------------------------------------------
 
-_storage = InMemoryStorage()
-_token_manager = CommitTokenManager(secret=_SECRET_KEY)
-_proposer = ToolProposer(
-    storage=_storage,
-    config=ProposalConfig(block_threshold=_BLOCK_THRESHOLD),
-    token_manager=_token_manager,
-)
-_verifier = CommitVerifier(
-    storage=_storage,
-    token_manager=_token_manager,
+_proposer, _verifier, _token_manager = build_gate(
+    secret_env="OBSERVATORY_SECRET_KEY",
+    block_threshold_env="OBSERVATORY_BLOCK_THRESHOLD",
 )
 
 # ---------------------------------------------------------------------------
@@ -63,6 +59,13 @@ class DynamoDBSpanExporter(Exporter):
     and its name is injected at deploy time via the OBSERVATORY_METRICS_TABLE env var,
     resolved by the SharedStackLookup custom resource from the stack output
     "ObservatoryMetricsTableName".
+
+    Kept hand-rolled rather than mcp_observatory.aws.DynamoDBSpanExporter: this
+    table is shared with other services (a "service": "toolweave" tag plus
+    WRAPPER#/INVOCATION# pk prefixes distinguish rows), and the library's
+    exporter writes a different item shape (pk="SPAN#...", every populated
+    TraceContext field, no service tag) — swapping would silently change what
+    is written to a table other consumers may already query.
     """
 
     async def export(self, context: TraceContext) -> None:
