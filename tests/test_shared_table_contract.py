@@ -24,7 +24,7 @@ import sys
 
 import pytest
 
-from contracts.conformance import check_item, load_contract, readers_for
+from contracts.conformance import check_item, load_contract
 
 MODULE_NAME = "toolweave.observatory"
 
@@ -118,6 +118,37 @@ def test_invocation_metric_item_conforms_to_contract(observatory, table):
 
 
 # ---------------------------------------------------------------------------
+# Contract v2.0.0 -- SpanTimelineIndex GSI keys, both writers
+# ---------------------------------------------------------------------------
+
+
+async def test_span_exporter_item_carries_the_span_timeline_index_keys(observatory, table):
+    """Both writers must emit the GSI's key attributes (named in the contract
+    file, not retyped here) and they must agree on the UTC day (I6/I7) -- a
+    GSI indexes only items carrying both keys, so a writer omitting either is
+    as invisible as it was before this migration."""
+    contract = load_contract()
+    item = await _export_span(observatory, table)
+    gsi = contract["gsi"]
+
+    assert gsi["partition_key"] in item
+    assert gsi["sort_key"] in item
+    assert item[gsi["partition_key"]] == item[gsi["sort_key"]][:10]
+    assert check_item(item, contract) == []
+
+
+def test_invocation_metric_item_carries_the_span_timeline_index_keys(observatory, table):
+    contract = load_contract()
+    item = _write_invocation(observatory, table)
+    gsi = contract["gsi"]
+
+    assert gsi["partition_key"] in item
+    assert gsi["sort_key"] in item
+    assert item[gsi["partition_key"]] == item[gsi["sort_key"]][:10]
+    assert check_item(item, contract) == []
+
+
+# ---------------------------------------------------------------------------
 # Regression guard for the key-case bug
 # ---------------------------------------------------------------------------
 
@@ -144,37 +175,31 @@ def test_invocation_metric_uses_lower_case_key_attributes(observatory, table):
 
 
 # ---------------------------------------------------------------------------
-# Who actually reads these rows
+# Historical: pk-based reachability (superseded by the SpanTimelineIndex GSI)
 # ---------------------------------------------------------------------------
 
 
-async def test_span_exporter_namespace_has_no_readers(observatory, table):
-    """Pins the CURRENT truth: nothing reads what this writer writes.
+async def test_span_exporter_pk_is_unchanged_by_the_v2_migration(observatory, table):
+    """pk reachability is no longer the question (contract v2.0.0 supersedes
+    I5 -- ``namespace_registry`` is now ``legacy-informational``: reads go
+    through the SpanTimelineIndex GSI, not a pk a reader has to enumerate).
 
-    ``readers_for`` returns the readers registered for a pk's namespace in the
-    contract, and an empty list is the machine-readable form of "these rows are
-    written, billed, and never read". TeamWeave's dashboards and DeployWeave's
-    model selector query ``OBSERVATORY#{operation}`` partitions only, so the
-    ``WRAPPER#`` namespace has no consumer.
-
-    Fixing the key case made these writes succeed and become durable; it did
-    not make them visible. That is deliberate. Which namespace scheme wins
-    across the portfolio is an open platform decision, and renaming the
-    namespace unilaterally here would be a cross-repo change made by one
-    consumer. This assertion therefore records a known gap rather than
-    endorsing it, and is expected to change — to a non-empty list — when that
-    decision lands.
+    ``WRAPPER#`` having "no readers" in that registry was true before this
+    migration and is retained here only as a historical note about rows
+    written before it landed; it says nothing about whether a dashboard sees
+    a row written today, which is exactly what
+    ``test_span_exporter_item_carries_the_span_timeline_index_keys`` checks.
+    v2 deliberately leaves pk alone -- it is the writer's own business now --
+    so this only pins that the discriminator itself didn't move.
     """
     item = await _export_span(observatory, table)
     assert item["pk"].startswith("WRAPPER#")
-    assert readers_for(item["pk"]) == []
 
 
-def test_invocation_namespace_has_no_readers(observatory, table):
-    """Same recorded gap for ``INVOCATION#`` — see the test above."""
+def test_invocation_metric_pk_is_unchanged_by_the_v2_migration(observatory, table):
+    """Same historical note for ``INVOCATION#`` -- see the test above."""
     item = _write_invocation(observatory, table)
     assert item["pk"].startswith("INVOCATION#")
-    assert readers_for(item["pk"]) == []
 
 
 # ---------------------------------------------------------------------------
