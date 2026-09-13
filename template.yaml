@@ -16,8 +16,11 @@ Parameters:
   ObservatorySecretKey:
     Type: String
     NoEcho: true
-    Default: "change-me-in-production"
-    Description: Secret key for mcp-observatory HMAC token signing (set via GitHub secret)
+    MinLength: 1
+    Description: >
+      Secret key for mcp-observatory HMAC token signing (set via GitHub secret).
+      Required — mcp-observatory>=0.3.0 fails closed at construction time if
+      OBSERVATORY_SECRET_KEY is unset, so no insecure default is provided here.
 
   ObservatoryBlockThreshold:
     Type: String
