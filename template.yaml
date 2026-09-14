@@ -432,3 +432,26 @@ Outputs:
     Value: !Ref ApiCatalogTable
     Export:
       Name: !Sub "${AWS::StackName}-ApiCatalogTable"
+
+  # Two of the three tables were unpublished. A harness inspecting what a
+  # proposal actually recorded, or what metadata an ingested spec produced,
+  # had to derive the name from the ${AWS::StackName}-Suffix convention --
+  # which works right up until the convention changes, and then fails by
+  # reading an empty table rather than by erroring.
+
+  ApiMetaTableName:
+    Description: >
+      DynamoDB table holding per-API metadata (base URL, auth, spec source),
+      keyed by api_id. Populated when a spec is ingested from ApiSpecsBucket.
+    Value: !Ref ApiMetaTable
+    Export:
+      Name: !Sub "${AWS::StackName}-ApiMetaTable"
+
+  ProposalsTableName:
+    Description: >
+      DynamoDB table of tool-call proposals awaiting or having completed
+      gate review, keyed by proposal_id with a _expires_at TTL. This is the
+      record a harness asserts against after a gated call.
+    Value: !Ref ProposalsTable
+    Export:
+      Name: !Sub "${AWS::StackName}-ProposalsTable"
