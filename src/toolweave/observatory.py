@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import time
+import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, AsyncGenerator
@@ -51,6 +53,59 @@ _proposer, _verifier, _token_manager = build_gate(
 _ddb = boto3.resource("dynamodb", region_name=os.environ.get("AWS_REGION", "us-east-1"))
 _metrics_table = _ddb.Table(OBSERVATORY_METRICS_TABLE)
 
+logger = logging.getLogger(__name__)
+
+# Rows in a shared table must expire rather than accumulate (contract invariant
+# I4). 90 days matches the TTL TeamWeave's writer uses on the same table.
+_TTL_SECONDS = 90 * 24 * 60 * 60
+
+_metrics_write_failures = 0
+
+
+def _warn_metrics_write_failed(pk: str, exc: BaseException) -> None:
+    """Log a swallowed metrics-write failure without raising and without spamming.
+
+    Metrics writes sit in the request path of every tool call and every wrapped
+    model invocation, so a per-call warning would flood the log of a hot Lambda.
+    This logs the first failure in the process and every 1000th afterwards, which
+    is enough for a systemic failure (a rejected item shape, a missing IAM grant)
+    to appear at least once while a transient throttle stays quiet.
+
+    The whole body is guarded: a logging failure must not become the exception
+    that metrics writes exist never to raise.
+    """
+    global _metrics_write_failures
+    try:
+        _metrics_write_failures += 1
+        if _metrics_write_failures == 1 or _metrics_write_failures % 1000 == 0:
+            logger.warning(
+                "OBSERVATORY_METRICS write failed (pk=%s, table=%s, "
+                "%d failure(s) in this process): %s: %s",
+                pk,
+                OBSERVATORY_METRICS_TABLE,
+                _metrics_write_failures,
+                type(exc).__name__,
+                exc,
+            )
+    except Exception:
+        pass
+
+
+def _wrapper_operation(method: str | None) -> str:
+    """Map a wrapper TraceContext's `method` to a readable `operation` value.
+
+    mcp_observatory sets ``span.method = f"wrapper/{source}"`` (see
+    ``InvocationWrapperAPI._execute_with_span``), which is also this writer's
+    pk discriminator and is already stored verbatim in the `source` attribute.
+    Copying it into `operation` too would just be the pk restated, so
+    "wrapper/agent" / "wrapper/model" become the call kind they name instead:
+    "invoke_agent" / "invoke_model". An unrecognized or missing method falls
+    back to the raw label (still non-empty, satisfying I8) rather than a
+    silently wrong guess.
+    """
+    label = (method or "unknown").split("/", 1)[-1]
+    return f"invoke_{label}" if label in ("agent", "model") else label
+
 
 class DynamoDBSpanExporter(Exporter):
     """Exports InvocationWrapperAPI span telemetry to the shared OBSERVATORY_METRICS table.
@@ -66,15 +121,37 @@ class DynamoDBSpanExporter(Exporter):
     exporter writes a different item shape (pk="SPAN#...", every populated
     TraceContext field, no service tag) — swapping would silently change what
     is written to a table other consumers may already query.
+
+    Item shape is pinned by contracts/observatory_metrics_item.json (vendored
+    from mcp-observatory) and asserted by tests/test_shared_table_contract.py.
+
+    Known limitation: the WRAPPER# and INVOCATION# namespaces this module
+    writes have NO reader. TeamWeave's dashboards and DeployWeave's model
+    selector query OBSERVATORY#{operation} partitions only, so these rows are
+    now durable and billable but still invisible to every dashboard. Which
+    namespace scheme wins across the portfolio is an open platform decision;
+    it is deliberately not resolved here by renaming the namespace.
     """
 
     async def export(self, context: TraceContext) -> None:
+        pk = f"WRAPPER#{context.method or 'unknown'}"
         try:
             ts = datetime.now(timezone.utc).isoformat()
             _metrics_table.put_item(
                 Item={
-                    "PK": f"WRAPPER#{context.method or 'unknown'}",
-                    "SK": ts,
+                    "pk": pk,
+                    "sk": f"{ts}#{context.trace_id}",
+                    "timestamp": ts,
+                    # SpanTimelineIndex partition key (contract v2.0.0, I6/I7).
+                    # Sliced from `ts` above so the two can never disagree.
+                    "span_date": ts[:10],
+                    # Contract v2.0.0 I8. `context.method` (also the pk
+                    # discriminator, already carried verbatim in `source`
+                    # below) is "wrapper/{source}" — e.g. "wrapper/agent" —
+                    # so it is remapped to a readable call kind rather than
+                    # repeated here unchanged.
+                    "operation": _wrapper_operation(context.method),
+                    "ttl": Decimal(int(time.time()) + _TTL_SECONDS),
                     "service": "toolweave",
                     "source": context.method or "unknown",
                     "model": context.model or "",
@@ -94,8 +171,8 @@ class DynamoDBSpanExporter(Exporter):
                     "fallback_reason": context.fallback_reason or "",
                 }
             )
-        except Exception:
-            pass  # never let metrics writes crash the main flow
+        except Exception as exc:  # never let metrics writes crash the main flow
+            _warn_metrics_write_failed(pk, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -136,12 +213,26 @@ def _write_invocation_metric(
     error_msg: str = "",
 ) -> None:
     """Write one invocation record to the shared OBSERVATORY_METRICS DynamoDB table."""
+    pk = f"INVOCATION#{tool_name}"
     try:
         ts = datetime.now(timezone.utc).isoformat()
+        # No TraceContext here, so the sk discriminator is a fresh id; the
+        # contract requires sk to be "{iso8601}#{id}" and unique per row.
         _metrics_table.put_item(
             Item={
-                "PK": f"INVOCATION#{tool_name}",
-                "SK": ts,
+                "pk": pk,
+                "sk": f"{ts}#{uuid.uuid4().hex}",
+                "timestamp": ts,
+                # SpanTimelineIndex partition key (contract v2.0.0, I6/I7).
+                # Sliced from `ts` above so the two can never disagree.
+                "span_date": ts[:10],
+                # Contract v2.0.0 I8. Unlike the WRAPPER# writer above,
+                # tool_name ("pre_tool" / "post_tool" / "commit_api_call" /
+                # "reload_catalog" — one of the four MCP tools) already names
+                # the kind of call this is, so it is reused verbatim rather
+                # than remapped.
+                "operation": tool_name,
+                "ttl": Decimal(int(time.time()) + _TTL_SECONDS),
                 "tool_name": tool_name,
                 "service": "toolweave",
                 "inputs": json.dumps(inputs, default=str)[:1000],
@@ -150,8 +241,8 @@ def _write_invocation_metric(
                 "error": error_msg[:500] if error_msg else "",
             }
         )
-    except Exception:
-        pass  # never let metrics writes crash the main flow
+    except Exception as exc:  # never let metrics writes crash the main flow
+        _warn_metrics_write_failed(pk, exc)
 
 
 # ---------------------------------------------------------------------------

@@ -38,4 +38,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-pythonpath = ["src"]
+# "." puts the vendored contracts/ package on the path for
+# tests/test_shared_table_contract.py; it is test-only and is not packaged.
+pythonpath = ["src", "."]
