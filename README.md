@@ -79,13 +79,55 @@ pre_tool -> post_tool -> (optional) commit_api_call
 
 ### 1) Ingest API specs
 
-1. Upload `.yaml/.yml/.json` spec to the API specs bucket.
+The specs ToolWeave serves are declared in `src/Swagger/` and published by the
+deploy. Today that is two siblings:
+
+| Spec | API | Server resolved from |
+|------|-----|----------------------|
+| `deviceweave.yaml` | DeviceWeave | `deviceweave` stack, `ApiBaseUrl` output |
+| `content-orchestrator.yaml` | TaskWeave Content Orchestrator | `tarun-admin-content` stack, `ApiBaseUrl` output |
+
+1. `scripts/publish_specs.py` uploads each to the API specs bucket.
 2. EventBridge invokes `SwaggerProcessorFunction`.
 3. Processor:
    - Loads spec from S3.
    - Parses endpoints and body fields.
    - Enriches endpoint metadata via Bedrock.
    - Replaces existing rows for that API in DynamoDB.
+
+**Why a publisher rather than `aws s3 cp`.** Both specs declare their server as
+an OAS3 variable, because they instruct callers to resolve the host from a
+CloudFormation output rather than hardcode it:
+
+```yaml
+servers:
+  - url: "{apiBaseUrl}"
+    variables:
+      apiBaseUrl:
+        default: https://example.execute-api.us-east-1.amazonaws.com/prod
+```
+
+That default is the trap. It is not an obviously broken placeholder — it
+resolves, it is a syntactically valid API Gateway URL, and it points at a host
+that does not exist. A spec uploaded verbatim catalogs every one of its
+endpoints against that address; the agent plans calls against them and each
+one fails with a connection error naming a plausible AWS hostname.
+
+So the publisher rewrites `servers` to the one literal URL read from that
+sibling's stack, and verifies the result with the same resolver the processor
+uses. A spec that still carries a server template therefore did not come
+through the publisher, and `swagger_processor` **refuses to catalog it**.
+
+A sibling whose stack does not resolve is skipped by name and left in the
+bucket untouched: one API fewer, rather than an API pointing nowhere — and
+never a working catalog entry deleted because one `describe-stacks` call
+blipped.
+
+**Withdrawing a spec.** Removing it from `src/Swagger/` prunes it from the
+bucket on the next deploy, and the `Object Deleted` event drops its endpoints
+*and* its metadata row from DynamoDB. Both halves matter: the rule used to
+listen for `Object Created` only, so a deleted spec left its endpoints in the
+catalog and the MCP server went on offering an API that existed nowhere else.
 
 ### 2) Plan API calls from user prompts
 

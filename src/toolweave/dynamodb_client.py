@@ -112,6 +112,17 @@ def delete_api_entries(api_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def delete_api_meta(api_id: str) -> None:
+    """Remove the API's metadata row.
+
+    `delete_api_entries` clears the endpoints but leaves this behind, which is
+    fine when a spec is being *replaced* -- the row is rewritten straight
+    after. When a spec is withdrawn there is no rewrite, and a meta row with no
+    endpoints is an API the catalog still claims to know.
+    """
+    _meta_table.delete_item(Key={"api_id": api_id})
+
+
 def save_proposal(proposal_id: str, data: dict[str, Any], ttl_seconds: int = 3600) -> None:
     _proposals_table.put_item(
         Item={

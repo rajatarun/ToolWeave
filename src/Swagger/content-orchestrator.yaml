@@ -1,0 +1,675 @@
+openapi: 3.0.3
+
+info:
+  title: TaskWeave Content Orchestrator API
+  version: "1.0.0"
+  description: |
+    The HTTP surface of the content orchestrator: a public site/newsletter API
+    and a protected admin API for the article lifecycle.
+
+    **This supersedes the endpoint table in CLAUDE.md**, which listed four
+    routes and described `/admin` as "List / create articles". The handler
+    actually serves thirteen paths and sixteen operations, articles live under
+    `/admin/articles` rather than `/admin`, and every
+    lifecycle transition goes through
+    `POST /admin/articles/{id}/actions/{action}` rather than through PATCH.
+    `tests/test_openapi_contract.py` compares this file against the route
+    literals in `src/*.py`, so it cannot drift the way that table did.
+
+    **Resolving the server.** Do not hardcode the URL, and do not copy the
+    table or bucket names either:
+
+        aws cloudformation describe-stacks --stack-name tarun-admin-content \
+          --query "Stacks[0].Outputs"
+
+    `scripts/stack_env.py` turns those outputs into environment variables for a
+    harness: API base URL, the DynamoDB table **and the two GSI names needed to
+    query it**, the articles bucket and prefix, and the Gemini model id the
+    stack is actually deployed with.
+
+    **Authentication.** Every `/admin` route requires both an API key
+    (`x-api-key`) and a SIWE-issued bearer JWT; the API sets
+    `ApiKeyRequired: true` with a Lambda authorizer as the default and only the
+    CORS preflights opt out. `/public/*` and `/site/*` opt out explicitly and
+    take neither.
+
+servers:
+  - url: "{apiBaseUrl}"
+    description: Resolved from the ApiBaseUrl stack output
+    variables:
+      apiBaseUrl:
+        default: https://example.execute-api.us-east-1.amazonaws.com/prod
+        description: The ApiBaseUrl output of the tarun-admin-content stack
+
+security:
+  - ApiKeyAuth: []
+    SiweBearer: []
+
+tags:
+  - name: admin
+    description: Article lifecycle. Requires both an API key and a bearer JWT.
+  - name: public
+    description: Unauthenticated. Newsletter signup and appointment requests.
+  - name: site
+    description: Unauthenticated. Published articles, read from S3 rather than DynamoDB.
+
+paths:
+
+  /admin:
+    get:
+      tags: [admin]
+      operationId: adminHealth
+      summary: Liveness probe for the admin API
+      responses:
+        "200":
+          description: Reachable and authorised
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, example: true }
+
+  /admin/articles:
+    get:
+      tags: [admin]
+      operationId: listArticles
+      summary: List articles in one status
+      description: |
+        Backed by the `StatusUpdatedIndex` GSI, whose name is published as the
+        `ContentTableStatusUpdatedIndex` stack output. `status` is
+        case-insensitive but must be one of the known statuses; an unknown one
+        is a 400, not an empty list, so a typo cannot read as "nothing here".
+      parameters:
+        - name: status
+          in: query
+          description: Defaults to DRAFT
+          schema:
+            $ref: "#/components/schemas/ArticleStatus"
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        "200":
+          description: Articles, each decorated with the actions legal in its status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/DecoratedArticle" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+    post:
+      tags: [admin]
+      operationId: createArticle
+      summary: Create a draft article
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string }
+                sourceInputs: { type: string }
+                tags: { type: array, items: { type: string } }
+                status: { $ref: "#/components/schemas/ArticleStatus" }
+                scheduledAt: { type: string }
+      responses:
+        "201":
+          description: |
+            The created article — **undecorated**. Unlike every other article
+            response this one carries no `ctas`/`ctaPresentation`, because the
+            create path returns the stored item directly. A client that renders
+            action buttons from the create response will render none; re-read
+            the article to get them.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Article" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /admin/articles/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ArticleId"
+    get:
+      tags: [admin]
+      operationId: getArticle
+      responses:
+        "200":
+          description: The article
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DecoratedArticle" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [admin]
+      operationId: updateArticle
+      summary: Merge fields into an article
+      description: |
+        A shallow merge, except `meta`, which is merged one level deep, and
+        `meta.version`, which is incremented. Empty strings and nulls are
+        dropped before the write, because DynamoDB rejects an empty string in a
+        GSI key attribute — so PATCHing a field to `""` removes it rather than
+        blanking it.
+
+        Use the actions endpoint for status transitions: PATCHing `status`
+        directly skips the side effects (S3 publish, event log) that the
+        corresponding action performs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: The updated article
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DecoratedArticle" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /admin/articles/{id}/events:
+    parameters:
+      - $ref: "#/components/parameters/ArticleId"
+    get:
+      tags: [admin]
+      operationId: listArticleEvents
+      summary: Audit trail for one article
+      responses:
+        "200":
+          description: Events, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        pk: { type: string, example: "EVENT#3f2c…" }
+                        sk: { type: string, description: "ISO timestamp, doubling as the sort key" }
+                        type: { type: string, example: PUBLISHED_TO_S3 }
+                        message: { type: string }
+
+  /admin/articles/{id}/actions/{action}:
+    parameters:
+      - $ref: "#/components/parameters/ArticleId"
+      - name: action
+        in: path
+        required: true
+        description: |
+          `request-edits`, `reject` and `mark-failed` also accept underscore and
+          singular spellings (`request_edits`, `request-edit`, …); everything
+          else must match exactly. An unrecognised action is a 404 with
+          `{"error": "Unknown action"}`, not a 400.
+        schema:
+          type: string
+          enum: [generate, submit-for-approval, request-edits, approve, mark-published, mark-failed, archive, reject]
+    post:
+      tags: [admin]
+      operationId: articleAction
+      summary: Drive an article through its lifecycle
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                revisionNote: { type: string, description: request-edits }
+                reason: { type: string, description: reject / mark-failed / archive }
+                publishedAt: { type: string, description: mark-published }
+                publishedUrl: { type: string, description: mark-published }
+      description: |
+        DRAFT → AWAITING_APPROVAL → APPROVED → PUBLISHED, with
+        REVISION_REQUESTED, FAILED and ARCHIVED as the branches. The legal
+        actions for an article's current status are on the article itself as
+        `ctas`, so a client does not have to reimplement the state machine.
+
+        Two actions are not simple status writes:
+
+        * `generate` invokes the draft-generation Lambda asynchronously and
+          returns **202** immediately. The article is unchanged when you get
+          the response; poll it.
+        * `approve` writes the article to S3 before returning. If that upload
+          fails the response is a 500 — but the status has **already** been set
+          to APPROVED, so the article is approved-but-unpublished rather than
+          rolled back.
+      responses:
+        "200":
+          description: Applied
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean }
+                  article: { $ref: "#/components/schemas/DecoratedArticle" }
+                  s3:
+                    type: object
+                    description: approve only
+                    properties:
+                      bucket: { type: string }
+                      key: { type: string }
+        "202":
+          description: |
+            `generate` only — the generation Lambda was invoked asynchronously.
+            Body is `{"ok": true}` and carries no article.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500":
+          description: |
+            `approve` only — the S3 upload failed after the status was written.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  details: { type: string }
+
+  /admin/newsletter/actions/generate:
+    post:
+      tags: [admin]
+      operationId: generateNewsletter
+      summary: Build the weekly newsletter without sending it
+      description: |
+        Invokes the newsletter Lambda synchronously and returns its payload
+        verbatim, so the response shape is whatever `src/newsletter.py` returns
+        rather than something this API defines.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: The newsletter Lambda's own response
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "500":
+          description: NEWSLETTER_FN_NAME is not configured on the admin Lambda
+          content:
+            application/json:
+              schema: { type: object, properties: { error: { type: string } } }
+
+  /admin/newsletter/actions/send:
+    post:
+      tags: [admin]
+      operationId: sendNewsletter
+      summary: Build and send the weekly newsletter via SES
+      description: |
+        Sends real email to every subscriber. There is no dry-run flag and no
+        confirmation step — an automation harness pointed at the production
+        stack will mail the live list.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: The newsletter Lambda's own response
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "500":
+          description: NEWSLETTER_FN_NAME is not configured on the admin Lambda
+          content:
+            application/json:
+              schema: { type: object, properties: { error: { type: string } } }
+
+  /admin/subscribers:
+    get:
+      tags: [admin]
+      operationId: listSubscribers
+      responses:
+        "200":
+          description: Every subscriber
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Subscriber" }
+    post:
+      tags: [admin]
+      operationId: addSubscriber
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        "201":
+          description: The stored subscriber
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Subscriber" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /admin/subscribers/{email}:
+    delete:
+      tags: [admin]
+      operationId: deleteSubscriber
+      description: |
+        Idempotent: deleting an address that was never subscribed is a 200.
+        The address is URL-decoded from the path, so `@` must be percent-encoded.
+      parameters:
+        - name: email
+          in: path
+          required: true
+          schema: { type: string, format: email }
+      responses:
+        "200":
+          description: Gone (or never present)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean }
+
+  /public/subscribe:
+    post:
+      tags: [public]
+      operationId: subscribe
+      summary: Newsletter signup
+      description: |
+        The `ses` sub-object reports whether the confirmation email went out.
+        A failure there is still a **200** with `ses.ok: false`: the address is
+        subscribed either way, and the endpoint deliberately does not fail the
+        signup because the mail did not send.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        "200":
+          description: Subscribed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, email, ses]
+                properties:
+                  ok: { type: boolean }
+                  email: { type: string, format: email }
+                  ses:
+                    type: object
+                    required: [ok]
+                    properties:
+                      ok: { type: boolean }
+                      already:
+                        type: boolean
+                        description: The address was already subscribed
+                      error: { type: string }
+        "400": { $ref: "#/components/responses/PublicBadRequest" }
+        "405":
+          description: Method not allowed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicError" }
+
+  /public/appointment:
+    post:
+      tags: [public]
+      operationId: requestAppointment
+      summary: Appointment request
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+                message: { type: string }
+      responses:
+        "200":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean }
+        "400": { $ref: "#/components/responses/PublicBadRequest" }
+
+  /site/posts:
+    get:
+      tags: [site]
+      operationId: listPosts
+      summary: Published article cards
+      description: |
+        Served from S3, not DynamoDB: it lists `ArticlesPrefix` under
+        `ArticlesBucketName` (both stack outputs) and builds a card per object.
+
+        `errors` is the count of objects that could not be turned into a card.
+        It is **not** an error response — the endpoint returns 200 with a
+        partial list, so a harness that ignores `errors` will silently accept
+        fewer posts than exist.
+      security: []
+      parameters:
+        - name: limit
+          in: query
+          description: Clamped to 1..50
+          schema: { type: integer, default: 20 }
+        - name: status
+          in: query
+          description: Comma-separated statuses to include; defaults to APPROVED,PUBLISHED
+          schema: { type: string, default: "APPROVED,PUBLISHED" }
+        - name: concurrency
+          in: query
+          description: S3 fetch parallelism, clamped to 1..10
+          schema: { type: integer, default: 5 }
+      responses:
+        "200":
+          description: Cards, newest published first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, count, errors, bucket, prefix]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        title: { type: string }
+                        status: { $ref: "#/components/schemas/ArticleStatus" }
+                        publishedAt: { type: string }
+                        publishedUrl: { type: string }
+                  count: { type: integer, description: Size of items after filtering }
+                  errors: { type: integer, description: Objects that could not be read or parsed }
+                  bucket: { type: string }
+                  prefix: { type: string }
+        "405":
+          description: Method not allowed
+          content:
+            application/json:
+              schema: { type: object, properties: { error: { type: string } } }
+
+  /site/posts/{id}:
+    get:
+      tags: [site]
+      operationId: getPost
+      summary: One published article, as stored in S3
+      description: |
+        Returns the S3 object verbatim — the article JSON written at approve
+        time, which is a snapshot and not the current DynamoDB item.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/ArticleId"
+      responses:
+        "200":
+          description: The stored article JSON
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "400":
+          description: Empty id
+          content:
+            application/json:
+              schema: { type: object, properties: { error: { type: string } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500":
+          description: The object exists but could not be read
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  details: { type: string }
+
+components:
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: API Gateway usage-plan key; 10000 requests/day, 50 rps, burst 100
+    SiweBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT issued by the SIWE authorizer (the siwe-infra stack)
+
+  parameters:
+    ArticleId:
+      name: id
+      in: path
+      required: true
+      description: Article UUID — the `sk` of the DynamoDB item and the S3 object basename
+      schema: { type: string }
+
+  responses:
+    BadRequest:
+      description: Unusable request
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string }
+    NotFound:
+      description: No such article
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string, example: Not found }
+    PublicBadRequest:
+      description: Unusable request
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/PublicError" }
+
+  schemas:
+
+    ArticleStatus:
+      type: string
+      enum: [DRAFT, AWAITING_APPROVAL, APPROVED, PUBLISHED, REVISION_REQUESTED, ARCHIVED, FAILED]
+
+    PublicError:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean, example: false }
+        error: { type: string }
+
+    Article:
+      type: object
+      description: |
+        Empty strings and nulls are stripped before the write, so an optional
+        field that was never set is **absent**, not null. Only the keys below
+        are guaranteed present.
+      required: [pk, sk, id, entityType, status, createdAt, updatedAt, tags, generated, meta]
+      properties:
+        pk: { type: string, enum: ["ARTICLE"] }
+        sk: { type: string, description: The article id; pk/sk together are the DynamoDB key }
+        id: { type: string }
+        entityType: { type: string, enum: ["ARTICLE"] }
+        title: { type: string }
+        sourceInputs: { type: string }
+        tags: { type: array, items: { type: string } }
+        status: { $ref: "#/components/schemas/ArticleStatus" }
+        createdAt: { type: string }
+        updatedAt: { type: string, description: Sort key of the StatusUpdatedIndex GSI }
+        scheduledAt: { type: string }
+        publishedAt: { type: string, description: Sort key of the StatusPublishedIndex GSI }
+        publishedUrl: { type: string }
+        revisionNote: { type: string }
+        generated:
+          type: object
+          description: AI-generated drafts (LinkedIn post, article body, …)
+          additionalProperties: true
+        meta:
+          type: object
+          properties:
+            version: { type: integer, description: Incremented on every update }
+            retryCount: { type: integer }
+            lastError: { type: string }
+
+    DecoratedArticle:
+      allOf:
+        - $ref: "#/components/schemas/Article"
+        - type: object
+          required: [ctas, ctaPresentation]
+          properties:
+            ctas:
+              type: array
+              description: The actions legal in this article's current status
+              items: { type: string }
+            ctaPresentation:
+              type: string
+              enum: [inline, dropdown]
+              description: dropdown when there are more than two actions
+
+    Subscriber:
+      type: object
+      properties:
+        pk: { type: string, enum: ["SUBSCRIBER"] }
+        sk: { type: string, format: email, description: The email address }
+        email: { type: string, format: email }
+        createdAt: { type: string }

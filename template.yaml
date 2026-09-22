@@ -220,7 +220,11 @@ Resources:
         source:
           - aws.s3
         detail-type:
+          # "Object Deleted" is not decoration: withdrawing a spec used to
+          # leave every one of its endpoints in DynamoDB, so the MCP server
+          # kept offering an API that no longer existed anywhere else.
           - "Object Created"
+          - "Object Deleted"
         detail:
           bucket:
             name:
