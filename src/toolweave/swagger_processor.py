@@ -20,7 +20,12 @@ from urllib.parse import unquote_plus
 import boto3
 
 from . import dynamodb_client, endpoint_enricher
-from .swagger_parser import api_id_from_s3_key, load_spec_from_bytes, parse_spec
+from .swagger_parser import (
+    api_id_from_s3_key,
+    load_spec_from_bytes,
+    parse_spec,
+    server_is_templated,
+)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -42,7 +47,10 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:  # no
             logger.warning("EventBridge event missing bucket/key: %s", event)
             return {"processed": 0, "errors": 1}
         try:
-            _process_file(bucket, key)
+            if event.get("detail-type") == "Object Deleted":
+                _forget_file(key)
+            else:
+                _process_file(bucket, key)
             return {"processed": 1, "errors": 0}
         except Exception:
             logger.error(
@@ -71,6 +79,21 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:  # no
             errors += 1
 
     return {"processed": processed, "errors": errors}
+
+
+def _forget_file(key: str) -> None:
+    """Drop an API from the catalog when its spec is removed from the bucket.
+
+    Withdrawing a spec was only ever half an operation: the processor listened
+    for `Object Created` alone, so deleting the object left every one of its
+    endpoints in DynamoDB and the MCP server went on offering an API nobody
+    had published for as long as the table lived. Nothing failed, and the
+    catalog is the only place that would have shown it.
+    """
+    api_id = api_id_from_s3_key(key)
+    logger.info("Forgetting api_id=%s (spec %s was removed from the bucket)", api_id, key)
+    dynamodb_client.delete_api_entries(api_id)
+    dynamodb_client.delete_api_meta(api_id)
 
 
 def _process_file(bucket: str, key: str) -> None:
@@ -103,6 +126,31 @@ def _process_file(bucket: str, key: str) -> None:
 
     if not entries:
         logger.warning("No endpoints found in %s — skipping DynamoDB write.", key)
+        return
+
+    if not base_url or server_is_templated(raw):
+        # Two different ways to have no usable address, refused together.
+        #
+        # An unresolved template (`{apiBaseUrl}`) would be cataloged as a base
+        # URL with a placeholder in it. The subtler one is a template that
+        # *does* resolve: both sibling specs ship a variable default of
+        # `https://example.execute-api.us-east-1.amazonaws.com/prod`, which is
+        # a syntactically valid URL pointing at a host that does not exist. A
+        # spec uploaded by hand rather than published would catalog every one
+        # of its endpoints against that address, and the agent would plan
+        # calls the executor can only fail.
+        #
+        # `publish_specs.py` writes a literal server, so a template here means
+        # the document did not come through it.
+        logger.error(
+            "Refusing to catalog %s: its servers[0].url is missing or still "
+            "carries an OAS3 variable (%r). Publish it with "
+            "scripts/publish_specs.py, which substitutes the real URL from the "
+            "sibling stack's output; uploading the spec verbatim would point "
+            "every endpoint at the placeholder host in its variable default.",
+            key,
+            base_url,
+        )
         return
 
     context_name = re.sub(r"[^a-zA-Z0-9]+", "", api_title)

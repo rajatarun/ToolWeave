@@ -36,6 +36,14 @@ jobs:
           python-version: "3.12"
 
       # ------------------------------------------------------------------
+      # Tests — offline, and a gate: a failing test stops the deploy.
+      # ------------------------------------------------------------------
+      - name: Unit tests
+        run: |
+          pip install -e ".[dev]"
+          python -m pytest tests/ -q
+
+      # ------------------------------------------------------------------
       # Validate (catches CFN/SAM syntax errors before build)
       # ------------------------------------------------------------------
       - name: SAM Validate
@@ -67,6 +75,37 @@ jobs:
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
             ${PARAM_OVERRIDES:+--parameter-overrides "$PARAM_OVERRIDES"}
+
+      # ------------------------------------------------------------------
+      # Publish the API specs ToolWeave serves.
+      #
+      # This is what makes src/Swagger/ mean anything: the bucket is the
+      # catalog's only source, and until now nothing in this repository wrote
+      # to it. Each spec's server variable is substituted from the sibling
+      # stack's own output, because publishing the placeholder host would give
+      # the agent an API it can plan calls against and never reach.
+      #
+      # Not a gate: a sibling that is not deployed yet is one tool fewer, not
+      # a broken ToolWeave.
+      # ------------------------------------------------------------------
+      - name: Publish API specs
+        continue-on-error: true
+        run: |
+          # Read the bucket from the stack that was just deployed. No
+          # fallback: a guessed bucket name is the hardcoding this stack
+          # publishes an output to avoid, and a guess that is wrong uploads
+          # specs where nothing reads them while reporting success.
+          BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name toolweave \
+            --region us-east-1 \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiSpecsBucketName'].OutputValue" \
+            --output text 2>/dev/null || true)
+          if [ -z "${BUCKET}" ] || [ "${BUCKET}" = "None" ]; then
+            echo "::error::toolweave stack published no ApiSpecsBucketName output; cannot publish specs."
+            exit 1
+          fi
+          echo "Publishing specs to s3://${BUCKET}"
+          python scripts/publish_specs.py --bucket "${BUCKET}" --region us-east-1
 
       # ------------------------------------------------------------------
       # Print Function URL for easy reference

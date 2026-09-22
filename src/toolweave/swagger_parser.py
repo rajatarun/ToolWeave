@@ -130,14 +130,58 @@ def _oas2_base_url(raw: dict) -> str:
     return base or ""
 
 
-def _oas3_base_url(raw: dict) -> str:
+# An OAS3 `servers[].url` may be a template: `"{apiBaseUrl}"` with the real
+# value supplied per deployment. Both sibling specs this catalog serves are
+# written that way on purpose -- they instruct callers to resolve the host
+# from a CloudFormation stack output rather than hardcode it.
+_SERVER_TEMPLATE = re.compile(r"\{([^{}]+)\}")
+
+
+def server_is_templated(raw: dict) -> bool:
+    """True when `servers[0].url` carries an OAS3 variable.
+
+    A spec published by `scripts/publish_specs.py` carries a literal URL, so a
+    template means the document did not come through the publisher and its
+    server is whatever placeholder the author shipped -- which for both
+    sibling specs resolves to a host that does not exist.
+    """
     servers = raw.get("servers", [])
-    if servers and isinstance(servers[0], dict):
-        url = servers[0].get("url", "")
-        if url and not url.startswith("http"):
-            return url  # relative — leave as-is
-        return url
-    return ""
+    if not servers or not isinstance(servers[0], dict):
+        return False
+    return bool(_SERVER_TEMPLATE.search(str(servers[0].get("url", ""))))
+
+
+def _oas3_base_url(raw: dict) -> str:
+    """Resolve `servers[0].url`, substituting OAS3 server variables.
+
+    Returns "" when the URL cannot be fully resolved. That is deliberate: an
+    unsubstituted `{apiBaseUrl}` stored as a base URL builds request targets
+    like `{apiBaseUrl}/admin/articles`, and every execution then fails with a
+    message about a malformed URL rather than about a spec that was never
+    given a server. The caller refuses to catalog an API with no base URL.
+    """
+    servers = raw.get("servers", [])
+    if not servers or not isinstance(servers[0], dict):
+        return ""
+
+    url = servers[0].get("url", "")
+    if not url:
+        return ""
+
+    variables = servers[0].get("variables") or {}
+
+    def _substitute(match: re.Match) -> str:
+        spec = variables.get(match.group(1))
+        if isinstance(spec, dict):
+            default = spec.get("default", "")
+            if isinstance(default, str) and default:
+                return default
+        return match.group(0)  # no default -- leave the placeholder in place
+
+    url = _SERVER_TEMPLATE.sub(_substitute, url)
+    if _SERVER_TEMPLATE.search(url):
+        return ""  # still templated: unresolvable, not a URL
+    return url
 
 
 # ---------------------------------------------------------------------------
