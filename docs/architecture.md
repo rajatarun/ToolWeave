@@ -231,7 +231,7 @@ Deployments are managed by GitHub Actions (`.github/workflows/deploy.yml`) using
 
 1. Fetches shared stack outputs (VPC, subnet IDs, observatory table ARN)
 2. Runs `sam validate → sam build → sam deploy`
-3. Passes `ObservatorySecretKey`, `BedrockModelId`, and other overrides as SAM parameters
+3. Passes `ObservatorySecretKey`, `McpAuthTokenSecretName`, and the US Claude Haiku 4.5 inference profile as `BedrockModelId` and `EnricherModelId`. Those two are passed on every deploy so an existing stack cannot keep a previous model ID.
 
 ---
 
@@ -258,7 +258,7 @@ All models are defined in `src/toolweave/models.py` using Pydantic v2.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AWS_REGION` | `us-east-1` | AWS region |
-| `BEDROCK_MODEL_ID` | `anthropic.claude-3-haiku-20240307-v1:0` | Agent model |
+| `BEDROCK_MODEL_ID` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Agent model (US Haiku 4.5 inference profile) |
 | `ENRICHER_MODEL_ID` | same as above | Enrichment model |
 | `CATALOG_TABLE_NAME` | `toolweave-ApiCatalogTable` | DynamoDB catalog table |
 | `META_TABLE_NAME` | `toolweave-ApiMetaTable` | DynamoDB meta table |

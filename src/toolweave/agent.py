@@ -22,7 +22,8 @@ from typing import Any
 
 import boto3
 
-from . import catalog_search, data_dictionary_client, observatory as _obs
+from . import bedrock, catalog_search, data_dictionary_client
+from . import observatory as _obs
 from .models import EndpointEntry, FieldMapping, PreToolResponse
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ _bedrock = boto3.client(
 )
 BEDROCK_MODEL_ID = os.environ.get(
     "BEDROCK_MODEL_ID",
-    "anthropic.claude-3-haiku-20240307-v1:0",
+    bedrock.HAIKU_US_INFERENCE_PROFILE_ID,
 )
 
 
@@ -276,7 +277,7 @@ async def _run_agent_inner(
             "system": [{"text": SYSTEM_PROMPT}],
             "messages": history,
             "toolConfig": {"tools": AGENT_TOOLS},
-            "inferenceConfig": {"maxTokens": 2048, "temperature": 0.0},
+            "inferenceConfig": bedrock.converse_inference_config(2048),
         }
         _log_converse_request(session_id, _iteration, history)
 

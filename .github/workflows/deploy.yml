@@ -85,7 +85,11 @@ jobs:
 
           # ObservatorySecretKey is passed only when the GitHub secret is set.
           # McpAuthTokenSecretName is always passed, and it is never empty.
-          PARAM_OVERRIDES="McpAuthTokenSecretName=${SECRET_NAME}"
+          # BedrockModelId and EnricherModelId are always passed as the US
+          # Haiku 4.5 inference profile. Leaving them off the override list
+          # makes CloudFormation keep the previous value, which is how a
+          # retired model ID survives a template-default change.
+          PARAM_OVERRIDES="McpAuthTokenSecretName=${SECRET_NAME} BedrockModelId=us.anthropic.claude-haiku-4-5-20251001-v1:0 EnricherModelId=us.anthropic.claude-haiku-4-5-20251001-v1:0"
           if [ -n "$OBSERVATORY_SECRET_KEY" ]; then
             PARAM_OVERRIDES="${PARAM_OVERRIDES} ObservatorySecretKey=\"${OBSERVATORY_SECRET_KEY}\""
           fi
