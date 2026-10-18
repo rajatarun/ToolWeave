@@ -217,8 +217,8 @@ ToolWeave reads configuration from environment variables (with defaults in code/
 | `OBSERVATORY_METRICS_TABLE` | Shared metrics table |
 | `OBSERVATORY_SECRET_KEY` | HMAC secret for proposal commit tokens |
 | `OBSERVATORY_BLOCK_THRESHOLD` | Risk score threshold to block proposals |
-| `BEDROCK_MODEL_ID` | Bedrock model for planning agent |
-| `ENRICHER_MODEL_ID` | Bedrock model for endpoint enrichment |
+| `BEDROCK_MODEL_ID` | Planning agent. Default `us.anthropic.claude-haiku-4-5-20251001-v1:0` (US Claude Haiku 4.5 inference profile) |
+| `ENRICHER_MODEL_ID` | Endpoint enrichment. Same default profile |
 | `DATA_DICTIONARY_URL` | Base URL of DataDictionary MCP Lambda |
 | `AWS_REGION` | AWS region for SDK clients |
 | `MCP_AUTH_TOKEN_SECRET_NAME` | Secrets Manager name of the `/mcp` bearer token. The value is a name, not the token. |

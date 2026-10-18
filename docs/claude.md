@@ -194,7 +194,7 @@ GitHub Actions handles production deploys via OIDC — no manual `sam deploy` is
 AWS_REGION=us-east-1
 
 # Required for Bedrock
-BEDROCK_MODEL_ID=anthropic.claude-3-haiku-20240307-v1:0
+BEDROCK_MODEL_ID=us.anthropic.claude-haiku-4-5-20251001-v1:0
 
 # Required for proposal gating (use a strong secret in production)
 OBSERVATORY_SECRET_KEY=your-secret-here
