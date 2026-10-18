@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-import toolweave.mcp_auth as mcp_auth
+from toolweave import mcp_auth
 
 TOKEN = "expected-token-value"
 SECRET_NAME = "toolweave/mcp-auth-token"
@@ -90,7 +90,7 @@ def secrets(monkeypatch):
 def mcp_server(monkeypatch):
     """Import the Lambda entrypoint without a real observatory secret."""
     monkeypatch.setenv("MCP_OBSERVATORY_ALLOW_DEV_SECRET", "1")
-    import toolweave.server as server
+    from toolweave import server
 
     return server
 

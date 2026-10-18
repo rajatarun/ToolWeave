@@ -376,7 +376,7 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:s3:::toolweave-api-specs-${AWS::AccountId}-${AWS::Region}"
                   - !Sub "arn:aws:s3:::toolweave-api-specs-${AWS::AccountId}-${AWS::Region}/*"
-              # Bearer token for /mcp. Secrets Manager appends a hyphen and
+              # MCP auth token for /mcp. Secrets Manager appends a hyphen and
               # six random characters to the name; without the suffix wildcard
               # GetSecretValue never matches. This is the only secret the
               # statement allows. The swagger processor shares this role and
