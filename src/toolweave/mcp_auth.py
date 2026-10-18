@@ -171,7 +171,7 @@ def read_configured_token(
     try:
         response = client.get_secret_value(SecretId=name)
         token = token_from_secret_string(_secret_text(response))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — any lookup failure must fail closed
         logger.warning(
             "mcp auth token lookup failed type=%s code=%s",
             type(exc).__name__,
