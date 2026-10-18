@@ -42,6 +42,23 @@ Parameters:
     Default: "https://ft5yitoykshqz73sejd7miatze0syqds.lambda-url.us-east-1.on.aws/"
     Description: DataDictionary MCP Lambda Function URL
 
+  # The secret value is created out of band and is not a template parameter.
+  # MinLength plus AllowedPattern reject a blank override. An empty name is
+  # how an earlier MCP deploy on a sibling stack shipped an endpoint that
+  # answered 401 to every caller while the changeset still succeeded.
+  McpAuthTokenSecretName:
+    Type: String
+    Default: toolweave/mcp-auth-token
+    MinLength: 1
+    MaxLength: 512
+    AllowedPattern: "[A-Za-z0-9/_+=.@-]+"
+    Description: >
+      Secrets Manager secret name whose SecretString is the bearer token
+      required on /mcp. This is the name, never the token. Create the secret
+      before the first authenticated call:
+      aws secretsmanager create-secret --name toolweave/mcp-auth-token
+      --secret-string "$(openssl rand -hex 32)".
+
 # ---------------------------------------------------------------------------
 # Globals
 # ---------------------------------------------------------------------------
@@ -359,6 +376,14 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:s3:::toolweave-api-specs-${AWS::AccountId}-${AWS::Region}"
                   - !Sub "arn:aws:s3:::toolweave-api-specs-${AWS::AccountId}-${AWS::Region}/*"
+              # Bearer token for /mcp. Secrets Manager appends a hyphen and
+              # six random characters to the name; without the suffix wildcard
+              # GetSecretValue never matches. This is the only secret the
+              # statement allows. The swagger processor shares this role and
+              # does not call Secrets Manager.
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${McpAuthTokenSecretName}-*"
 
   # ---- API Gateway HTTP API (v2) ----
   ToolWeaveHttpApi:
@@ -383,6 +408,9 @@ Resources:
       Role: !GetAtt ToolWeaveLambdaRole.Arn
       Timeout: 120
       MemorySize: 1024
+      Environment:
+        Variables:
+          MCP_AUTH_TOKEN_SECRET_NAME: !Ref McpAuthTokenSecretName
       Tags:
         Project: ToolWeave
       Events:

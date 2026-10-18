@@ -58,23 +58,42 @@ jobs:
       # ------------------------------------------------------------------
       # Deploy — VPC, subnet, and observatory table values are resolved
       # inside the template via the SharedStackLookup custom resource.
-      # Only the observatory secret key needs an external override.
+      #
+      # McpAuthTokenSecretName is passed on every deploy. Omitting it, or
+      # passing it as an empty override, replaces the template default with
+      # a blank and /mcp then rejects every caller. A repository variable
+      # may rename the secret; an unset or empty variable keeps the default.
+      # The token itself is not a parameter and is not in this workflow.
       # ------------------------------------------------------------------
       - name: SAM Deploy
         env:
           OBSERVATORY_SECRET_KEY: ${{ secrets.OBSERVATORY_SECRET_KEY }}
+          MCP_AUTH_TOKEN_SECRET_NAME: ${{ vars.MCP_AUTH_TOKEN_SECRET_NAME || 'toolweave/mcp-auth-token' }}
         run: |
-          # Only pass ObservatorySecretKey when the GitHub secret is set;
-          # all other parameters have defaults baked into the template.
-          PARAM_OVERRIDES=""
+          SECRET_NAME="$(printf '%s' "$MCP_AUTH_TOKEN_SECRET_NAME" | tr -d '[:space:]')"
+          if [ -z "$SECRET_NAME" ]; then
+            echo "::error::McpAuthTokenSecretName is blank. Refusing to deploy."
+            exit 1
+          fi
+          case "$SECRET_NAME" in
+            *[!A-Za-z0-9/_+=.@-]*)
+              echo "::error::McpAuthTokenSecretName contains characters the template rejects."
+              exit 1
+              ;;
+          esac
+          echo "MCP auth secret name: ${SECRET_NAME}"
+
+          # ObservatorySecretKey is passed only when the GitHub secret is set.
+          # McpAuthTokenSecretName is always passed, and it is never empty.
+          PARAM_OVERRIDES="McpAuthTokenSecretName=${SECRET_NAME}"
           if [ -n "$OBSERVATORY_SECRET_KEY" ]; then
-            PARAM_OVERRIDES="ObservatorySecretKey=\"$OBSERVATORY_SECRET_KEY\""
+            PARAM_OVERRIDES="${PARAM_OVERRIDES} ObservatorySecretKey=\"${OBSERVATORY_SECRET_KEY}\""
           fi
 
           sam deploy \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
-            ${PARAM_OVERRIDES:+--parameter-overrides "$PARAM_OVERRIDES"}
+            --parameter-overrides "$PARAM_OVERRIDES"
 
       # ------------------------------------------------------------------
       # Publish the API specs ToolWeave serves.
@@ -116,4 +135,4 @@ jobs:
             --stack-name toolweave \
             --query "Stacks[0].Outputs[?OutputKey=='ToolWeaveApiEndpoint'].OutputValue" \
             --output text)
-          echo "ToolWeave MCP endpoint: $URL"
+          echo "ToolWeave MCP endpoint: ${URL}/mcp"
