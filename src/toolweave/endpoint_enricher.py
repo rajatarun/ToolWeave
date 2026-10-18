@@ -21,15 +21,16 @@ from typing import Any
 import boto3
 from botocore.config import Config
 
+from . import bedrock
 from .models import EndpointEntry
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# Haiku is fast and cheap for structured enrichment; override via env var if needed.
+# Haiku 4.5 via the US inference profile; override via env var if needed.
 _ENRICHER_MODEL_ID = os.environ.get(
     "ENRICHER_MODEL_ID",
-    "anthropic.claude-3-haiku-20240307-v1:0",
+    bedrock.HAIKU_US_INFERENCE_PROFILE_ID,
 )
 _CONNECT_TIMEOUT_SECONDS = int(os.environ.get("ENRICHER_CONNECT_TIMEOUT_SECONDS", "5"))
 _READ_TIMEOUT_SECONDS = int(os.environ.get("ENRICHER_READ_TIMEOUT_SECONDS", "20"))
@@ -169,7 +170,7 @@ def _enrich_one(
         modelId=_ENRICHER_MODEL_ID,
         system=[{"text": _SYSTEM_PROMPT}],
         messages=[{"role": "user", "content": [{"text": user_msg}]}],
-        inferenceConfig={"maxTokens": 4096, "temperature": 0},
+        inferenceConfig=bedrock.converse_inference_config(4096),
     )
 
     logger.info(

@@ -72,7 +72,7 @@ def _make_context():
 
     return TraceContext(
         service="toolweave",
-        model="anthropic.claude-3-haiku-20240307-v1:0",
+        model="us.anthropic.claude-haiku-4-5-20251001-v1:0",
         method="invoke_agent",
         prompt_tokens=120,
         completion_tokens=45,
