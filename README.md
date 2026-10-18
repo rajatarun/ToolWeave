@@ -221,6 +221,7 @@ ToolWeave reads configuration from environment variables (with defaults in code/
 | `ENRICHER_MODEL_ID` | Bedrock model for endpoint enrichment |
 | `DATA_DICTIONARY_URL` | Base URL of DataDictionary MCP Lambda |
 | `AWS_REGION` | AWS region for SDK clients |
+| `MCP_AUTH_TOKEN_SECRET_NAME` | Secrets Manager name of the `/mcp` bearer token. The value is a name, not the token. |
 
 ### Helpful debug flags
 
@@ -258,7 +259,65 @@ sam build
 sam deploy
 ```
 
-`samconfig.toml` provides default deploy settings (stack name `toolweave`, region `us-east-1`).
+`samconfig.toml` provides default deploy settings (stack name `toolweave`, region `us-east-1`), including `McpAuthTokenSecretName=toolweave/mcp-auth-token`.
+
+---
+
+## MCP authentication
+
+The deployed `/mcp` route requires a bearer token. API Gateway still forwards every other path to the same Lambda, and those paths are not checked.
+
+The token is the `SecretString` of a Secrets Manager secret. The template parameter `McpAuthTokenSecretName` is the **name** of that secret (default `toolweave/mcp-auth-token`). The token is not a CloudFormation parameter and is not stored in this repository. The Lambda reads it with `secretsmanager:GetSecretValue` on that secret only, and caches a successful read for 60 seconds. A missing name, a missing secret, an empty secret, a missing header, or a wrong token all fail closed: HTTP 401 with a JSON-RPC error (`code` `-32001`). Nothing in that response says which of those it was.
+
+Create the secret before the deploy that turns this check on. The workflow does not create it. If the secret is not there yet, the stack can still deploy, and every `/mcp` call returns 401 until the secret exists. Creating or rotating it does not need another deploy. After a rotation, wait for the 60 second cache or start a new execution environment.
+
+```bash
+aws secretsmanager create-secret \
+  --name toolweave/mcp-auth-token \
+  --region us-east-1 \
+  --secret-string "$(openssl rand -hex 32)"
+```
+
+The secret string is the raw token, not JSON. To rotate it later:
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id toolweave/mcp-auth-token \
+  --region us-east-1 \
+  --secret-string "$(openssl rand -hex 32)"
+```
+
+A repository variable `MCP_AUTH_TOKEN_SECRET_NAME` can rename the secret. An unset or empty variable keeps `toolweave/mcp-auth-token`. The deploy refuses to ship a blank name: an empty override would replace the template default and leave `/mcp` rejecting every caller.
+
+Send the token on every `/mcp` request:
+
+```http
+Authorization: Bearer <token>
+```
+
+`mcp-remote` (the Grok connector transport) forwards that header. Put the token in the environment of the connector, not in git:
+
+```json
+{
+  "mcpServers": {
+    "toolweave": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://<api-id>.execute-api.us-east-1.amazonaws.com/mcp",
+        "--header",
+        "Authorization:${TOOLWEAVE_AUTHORIZATION}"
+      ],
+      "env": {
+        "TOOLWEAVE_AUTHORIZATION": "Bearer <token>"
+      }
+    }
+  }
+}
+```
+
+The URL is the `ToolWeaveApiEndpoint` stack output plus `/mcp`. The local `toolweave` process does not read the secret; the check runs in the Lambda entrypoint.
 
 ---
 
@@ -277,6 +336,7 @@ Pseudo-sequence for a client:
 
 ## Security and safety model
 
+- **`/mcp` requires `Authorization: Bearer <token>`.** The token is loaded from Secrets Manager. A missing or empty secret fails closed.
 - **Read operations (`GET`)** execute directly.
 - **Write operations** are gated through proposal/commit workflow.
 - Proposals are scored by `mcp-observatory` and can be blocked before execution.

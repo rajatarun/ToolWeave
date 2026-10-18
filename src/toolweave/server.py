@@ -9,6 +9,11 @@ Exposes four MCP tools:
   reload_catalog  — Reloads the endpoint catalog from DynamoDB
 
 Lambda entry point: lambda_handler (via Mangum).
+
+Every /mcp request must send ``Authorization: Bearer <token>``. The token
+is the SecretString of the Secrets Manager secret named by
+``MCP_AUTH_TOKEN_SECRET_NAME``. A missing, wrong, or unavailable token is
+HTTP 401 with a JSON-RPC error. Other routes are not checked.
 """
 
 import contextlib
@@ -21,7 +26,7 @@ from typing import Any, Optional
 from fastmcp import FastMCP
 from mangum import Mangum
 
-from . import agent, dynamodb_client, executor, observatory
+from . import agent, dynamodb_client, executor, mcp_auth, observatory
 from .models import CommitResult, ImmediateExecutionResult, PreToolResponse, ProposalResult
 
 logger = logging.getLogger(__name__)
@@ -300,6 +305,12 @@ async def reload_catalog() -> dict[str, Any]:
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> Any:
+    # Reject unauthenticated /mcp calls before any catalog or tool work.
+    # A missing secret fails closed here; it must not fall through to Mangum.
+    rejection = mcp_auth.reject_if_unauthorized(event)
+    if rejection is not None:
+        return rejection
+
     # Load catalog on first (cold) invocation.  Subsequent warm invocations
     # reuse the module-level _catalog list unless reload_catalog is called.
     global _catalog, _dd_context
