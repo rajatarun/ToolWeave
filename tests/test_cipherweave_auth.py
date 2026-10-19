@@ -156,7 +156,7 @@ def test_template_and_workflow_wire_the_verifier():
     for needle in ("CipherWeaveJwksUrl", "CIPHERWEAVE_JWKS_URL", "AcceptLegacyToken", "ACCEPT_LEGACY_TOKEN"):
         assert needle in template
     workflow = (REPO_ROOT / ".github" / "workflows" / "deploy.yml").read_text()
-    assert "pip install --no-deps --target src/ -r requirements-cipherweave.txt" in workflow
+    assert "CIPHERWEAVE_READ_TOKEN" not in workflow  # vendored: CI needs no CipherWeave credential
     assert "IssuerJwksUrl" in workflow
 
 
