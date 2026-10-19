@@ -267,6 +267,27 @@ async def commit_api_call(proposal_id: str, commit_token: str) -> dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
+# health — liveness, for callers checking that their token and the route work
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(
+    description=(
+        "Report that ToolWeave is up and how many endpoints are loaded. "
+        "Read-only; calls no API and does not reload the catalog."
+    ),
+    annotations={"readOnlyHint": True, "destructiveHint": False},
+)
+async def health() -> dict[str, Any]:
+    """Liveness check. No DynamoDB, Bedrock, or outbound API call."""
+    return {
+        "status": "ok",
+        "service": "toolweave",
+        "endpoint_count": len(_catalog),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Tool 4 — reload_catalog
 # ---------------------------------------------------------------------------
 

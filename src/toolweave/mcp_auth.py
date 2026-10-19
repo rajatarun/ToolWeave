@@ -1,6 +1,15 @@
 """Bearer-token check for the deployed ``/mcp`` route.
 
-The token value is never in source or in the template. ``MCP_AUTH_TOKEN_SECRET_NAME``
+Two kinds of bearer token are accepted, decided by
+``cipherweave_verify.BearerAuth`` (the same code the other Weaves run):
+
+* a CipherWeave access token — an ES256 JWT with ``aud`` = ``toolweave``,
+  verified in-process against CipherWeave's JWKS (``CIPHERWEAVE_JWKS_URL``);
+* while ``ACCEPT_LEGACY_TOKEN`` is true (the default, for the migration), the
+  static token described below. It is read only when the presented token is
+  not a valid CipherWeave token, so with the flag off it is never read.
+
+The static token value is never in source or in the template. ``MCP_AUTH_TOKEN_SECRET_NAME``
 is the name of an AWS Secrets Manager secret. The Lambda reads ``SecretString``
 at request time and caches a successful read in the execution environment.
 
@@ -24,8 +33,11 @@ import re
 import time
 from typing import Any
 
+from cipherweave_verify import BearerAuth
+
 logger = logging.getLogger(__name__)
 
+TOKEN_AUDIENCE = "toolweave"
 SECRET_NAME_ENV = "MCP_AUTH_TOKEN_SECRET_NAME"
 UNAUTHORIZED_CODE = -32001
 _CACHE_TTL_SECONDS = 60
@@ -278,6 +290,11 @@ def unauthorized_response(req_id: Any) -> dict[str, Any]:
     }
 
 
+# The static-token loader is looked up at call time, so a request with a good
+# CipherWeave token never reads Secrets Manager.
+_bearer_auth = BearerAuth(TOKEN_AUDIENCE, legacy_token=lambda: read_configured_token())
+
+
 def reject_if_unauthorized(event: dict) -> dict[str, Any] | None:
     """Return a 401 Lambda response, or None when the request may proceed.
 
@@ -286,8 +303,7 @@ def reject_if_unauthorized(event: dict) -> dict[str, Any] | None:
     if not isinstance(event, dict) or not is_mcp_path(event):
         return None
     presented = extract_bearer(event.get("headers"))
-    expected = read_configured_token()
-    if not credentials_ok(presented, expected):
+    if not _bearer_auth.check(presented).ok:
         logger.warning("MCP unauthorized")
         return unauthorized_response(_peek_id(event))
     return None
