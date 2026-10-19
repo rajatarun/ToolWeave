@@ -49,11 +49,60 @@ jobs:
       - name: SAM Validate
         run: sam validate --lint
 
-      # ------------------------------------------------------------------
-      # Build (native — no container needed for pure-Python deps)
-      # ------------------------------------------------------------------
       - name: SAM Build
         run: sam build
+
+      # Missing CipherWeave stack or output is not fatal: /mcp then refuses
+      # CipherWeave tokens and accepts only the static token, as before, and
+      # says so. The legacy flag is a repository variable, so a later push
+      # cannot turn it back on once the owner sets it to false.
+      - name: Resolve CipherWeave token issuer
+        id: cipherweave
+        env:
+          ACCEPT_LEGACY_TOKEN: ${{ vars.ACCEPT_LEGACY_TOKEN || 'true' }}
+          CIPHERWEAVE_STACK_NAME: ${{ vars.CIPHERWEAVE_STACK_NAME || 'cipherweave-prod' }}
+        run: |
+          get() {
+            aws cloudformation describe-stacks \
+              --stack-name "$CIPHERWEAVE_STACK_NAME" \
+              --region us-east-1 \
+              --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" \
+              --output text 2>/dev/null || echo ""
+          }
+          JWKS_URL=$(get IssuerJwksUrl)
+          ISSUER_ID=$(get IssuerId)
+          if [ "$JWKS_URL" = "None" ]; then JWKS_URL=""; fi
+          if [ "$ISSUER_ID" = "None" ] || [ -z "$ISSUER_ID" ]; then ISSUER_ID="urn:cipherweave:prod"; fi
+          if [ -z "$JWKS_URL" ]; then
+            echo "::warning::No IssuerJwksUrl on $CIPHERWEAVE_STACK_NAME. /mcp accepts only the static bearer token."
+            if [ "$ACCEPT_LEGACY_TOKEN" != "true" ]; then
+              echo "::error::ACCEPT_LEGACY_TOKEN is $ACCEPT_LEGACY_TOKEN and there is no JWKS URL: /mcp would accept no token at all."
+              exit 1
+            fi
+          fi
+          # Take the JWKS now, on the runner, so /mcp needs no network call to
+          # verify (the function's VPC reaches the internet only through the
+          # NAT instance). Public keys only. A failed download is a warning:
+          # the URL is still passed, and the function fetches at runtime.
+          JWKS_B64=""
+          if [ -n "$JWKS_URL" ]; then
+            if JWKS_BODY=$(curl -sS --fail --max-time 15 "$JWKS_URL"); then
+              JWKS_MIN=$(printf '%s' "$JWKS_BODY" | jq -c '{keys: [.keys[]? | select(.kty == "EC" and .crv == "P-256" and (has("d") | not)) | {kid, kty, crv, x, y, use, alg}]}')
+              if [ "$(printf '%s' "$JWKS_MIN" | jq '.keys | length')" -gt 0 ]; then
+                JWKS_B64=$(printf '%s' "$JWKS_MIN" | base64 -w0)
+                echo "Deploy-time JWKS: $(printf '%s' "$JWKS_MIN" | jq -r '[.keys[].kid] | join(", ")')"
+              else
+                echo "::warning::$JWKS_URL has no ES256 key; /mcp will fetch the JWKS at runtime."
+              fi
+            else
+              echo "::warning::Could not download $JWKS_URL; /mcp will fetch the JWKS at runtime."
+            fi
+          fi
+          echo "jwks_b64=$JWKS_B64" >> "$GITHUB_OUTPUT"
+          echo "jwks_url=$JWKS_URL" >> "$GITHUB_OUTPUT"
+          echo "issuer_id=$ISSUER_ID" >> "$GITHUB_OUTPUT"
+          echo "accept_legacy=$ACCEPT_LEGACY_TOKEN" >> "$GITHUB_OUTPUT"
+          echo "CipherWeave JWKS: ${JWKS_URL:-(none)}  static token accepted: $ACCEPT_LEGACY_TOKEN"
 
       # ------------------------------------------------------------------
       # Deploy — VPC, subnet, and observatory table values are resolved
@@ -69,6 +118,10 @@ jobs:
         env:
           OBSERVATORY_SECRET_KEY: ${{ secrets.OBSERVATORY_SECRET_KEY }}
           MCP_AUTH_TOKEN_SECRET_NAME: ${{ vars.MCP_AUTH_TOKEN_SECRET_NAME || 'toolweave/mcp-auth-token' }}
+          JWKS_URL: ${{ steps.cipherweave.outputs.jwks_url }}
+          ISSUER_ID: ${{ steps.cipherweave.outputs.issuer_id }}
+          JWKS_B64: ${{ steps.cipherweave.outputs.jwks_b64 }}
+          ACCEPT_LEGACY_TOKEN: ${{ steps.cipherweave.outputs.accept_legacy }}
         run: |
           SECRET_NAME="$(printf '%s' "$MCP_AUTH_TOKEN_SECRET_NAME" | tr -d '[:space:]')"
           if [ -z "$SECRET_NAME" ]; then
@@ -85,15 +138,32 @@ jobs:
 
           # ObservatorySecretKey is passed only when the GitHub secret is set.
           # McpAuthTokenSecretName is always passed, and it is never empty.
-          PARAM_OVERRIDES="McpAuthTokenSecretName=${SECRET_NAME}"
+          #
+          # One argument per override. SAM CLI parses a single space-joined
+          # string as long as every entry is Key=Value, but an empty value
+          # needs the ParameterKey=,ParameterValue="" form, and a string that
+          # mixes the two forms silently keeps only the ParameterKey entries.
+          PARAM_OVERRIDES=("McpAuthTokenSecretName=${SECRET_NAME}")
           if [ -n "$OBSERVATORY_SECRET_KEY" ]; then
-            PARAM_OVERRIDES="${PARAM_OVERRIDES} ObservatorySecretKey=\"${OBSERVATORY_SECRET_KEY}\""
+            PARAM_OVERRIDES+=("ObservatorySecretKey=\"${OBSERVATORY_SECRET_KEY}\"")
           fi
+          if [ -n "$JWKS_URL" ]; then
+            PARAM_OVERRIDES+=("CipherWeaveJwksUrl=${JWKS_URL}")
+          else
+            PARAM_OVERRIDES+=('ParameterKey=CipherWeaveJwksUrl,ParameterValue=""')
+          fi
+          if [ -n "$JWKS_B64" ]; then
+            PARAM_OVERRIDES+=("CipherWeaveJwks=${JWKS_B64}")
+          else
+            PARAM_OVERRIDES+=('ParameterKey=CipherWeaveJwks,ParameterValue=""')
+          fi
+          PARAM_OVERRIDES+=("CipherWeaveIssuer=${ISSUER_ID:-urn:cipherweave:prod}")
+          PARAM_OVERRIDES+=("AcceptLegacyToken=${ACCEPT_LEGACY_TOKEN:-true}")
 
           sam deploy \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
-            --parameter-overrides "$PARAM_OVERRIDES"
+            --parameter-overrides "${PARAM_OVERRIDES[@]}"
 
       # ------------------------------------------------------------------
       # Publish the API specs ToolWeave serves.
