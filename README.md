@@ -284,7 +284,7 @@ TOKEN=$(curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -H 'content-type: application/jso
 | `CipherWeaveJwksUrl` → `CIPHERWEAVE_JWKS_URL` | read by the deploy from the `cipherweave-prod` output `IssuerJwksUrl`. Empty: CipherWeave tokens are refused and only the static token works |
 | `CipherWeaveIssuer` → `CIPHERWEAVE_ISSUER` | `IssuerId` output, default `urn:cipherweave:prod` |
 | `AcceptLegacyToken` → `ACCEPT_LEGACY_TOKEN` | default `true`: the static token below keeps working. Set by the repository variable `ACCEPT_LEGACY_TOKEN` |
-| `CIPHERWEAVE_READ_TOKEN` (repository secret) | read-only access to the private CipherWeave repo, so the workflow can install `cipherweave_verify` (pinned in `requirements-cipherweave.txt`) for the tests and into `src/` |
+| `src/cipherweave_verify/` | vendored copy of the verifier, pinned by commit in `requirements-cipherweave.txt`, checksummed in `VENDORED.json`. Never edit it; upgrade with `scripts/sync_cipherweave_verify.sh` |
 
 The decision is `cipherweave_verify.BearerAuth`, the same code the other Weaves run. Each call logs `mcp auth method=jwt` or `method=legacy`. Once no `method=legacy` appears, set `ACCEPT_LEGACY_TOKEN=false` and redeploy: the static secret is then never read and can be deleted. `health` is a read-only tool for checking that a token and the route work.
 

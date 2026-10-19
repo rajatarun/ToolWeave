@@ -36,28 +36,11 @@ jobs:
           python-version: "3.12"
 
       # ------------------------------------------------------------------
-      # cipherweave_verify — the CipherWeave token check on /mcp — comes from
-      # the private CipherWeave repo by git URL, pinned in
-      # requirements-cipherweave.txt. Needs the CIPHERWEAVE_READ_TOKEN secret
-      # (read-only Contents on rajatarun/CipherWeave).
-      # ------------------------------------------------------------------
-      - name: Allow pip to read CipherWeave
-        env:
-          CIPHERWEAVE_READ_TOKEN: ${{ secrets.CIPHERWEAVE_READ_TOKEN }}
-        run: |
-          if [ -z "$CIPHERWEAVE_READ_TOKEN" ]; then
-            echo "::error::Repository secret CIPHERWEAVE_READ_TOKEN is not set. It needs read-only Contents access to rajatarun/CipherWeave (see CipherWeave docs/token-issuer.md)."
-            exit 1
-          fi
-          git config --global url."https://x-access-token:${CIPHERWEAVE_READ_TOKEN}@github.com/rajatarun/CipherWeave".insteadOf "https://github.com/rajatarun/CipherWeave"
-
-      # ------------------------------------------------------------------
       # Tests — offline, and a gate: a failing test stops the deploy.
       # ------------------------------------------------------------------
       - name: Unit tests
         run: |
           pip install -e ".[dev]"
-          pip install -r requirements-cipherweave.txt
           python -m pytest tests/ -q
 
       # ------------------------------------------------------------------
@@ -65,16 +48,6 @@ jobs:
       # ------------------------------------------------------------------
       - name: SAM Validate
         run: sam validate --lint
-
-      # ------------------------------------------------------------------
-      # Build (native — no container needed for pure-Python deps)
-      # ------------------------------------------------------------------
-      # Into src/ on the runner, so the Lambda package carries it; its one
-      # dependency (cryptography) is in src/requirements.txt.
-      - name: Install cipherweave_verify into the Lambda source
-        run: |
-          pip install --no-deps --target src/ -r requirements-cipherweave.txt
-          python -c "import sys; sys.path.insert(0, 'src'); import cipherweave_verify; print('cipherweave_verify', cipherweave_verify.__version__)"
 
       - name: SAM Build
         run: sam build
