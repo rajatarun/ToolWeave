@@ -32,6 +32,9 @@ ToolWeave exposes four MCP tools:
 4. **`reload_catalog`**
    - Reloads in-memory endpoint catalog from DynamoDB.
 
+5. **`health`**
+   - Read-only liveness: status and loaded endpoint count. No DynamoDB, Bedrock, or API call.
+
 ---
 
 ## Architecture at a glance
@@ -267,6 +270,26 @@ sam deploy
 
 The deployed `/mcp` route requires a bearer token. API Gateway still forwards every other path to the same Lambda, and those paths are not checked.
 
+### CipherWeave access tokens
+
+The bearer token can be a short-lived token from the CipherWeave token issuer: an ES256 JWT with `aud` = `toolweave`, 15-minute lifetime, verified in-process against CipherWeave's JWKS (cached 10 minutes). A token for another Weave, an expired or forged one, or `alg: none` is the same 401.
+
+```bash
+TOKEN=$(curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -H 'content-type: application/json' \
+  -d '{"audience":"toolweave"}' "$CIPHERWEAVE_API/token" | jq -r .access_token)
+```
+
+| Setting | |
+|---|---|
+| `CipherWeaveJwksUrl` → `CIPHERWEAVE_JWKS_URL` | read by the deploy from the `cipherweave-prod` output `IssuerJwksUrl`. Empty: CipherWeave tokens are refused and only the static token works |
+| `CipherWeaveIssuer` → `CIPHERWEAVE_ISSUER` | `IssuerId` output, default `urn:cipherweave:prod` |
+| `AcceptLegacyToken` → `ACCEPT_LEGACY_TOKEN` | default `true`: the static token below keeps working. Set by the repository variable `ACCEPT_LEGACY_TOKEN` |
+| `CIPHERWEAVE_READ_TOKEN` (repository secret) | read-only access to the private CipherWeave repo, so the workflow can install `cipherweave_verify` (pinned in `requirements-cipherweave.txt`) for the tests and into `src/` |
+
+The decision is `cipherweave_verify.BearerAuth`, the same code the other Weaves run. Each call logs `mcp auth method=jwt` or `method=legacy`. Once no `method=legacy` appears, set `ACCEPT_LEGACY_TOKEN=false` and redeploy: the static secret is then never read and can be deleted. `health` is a read-only tool for checking that a token and the route work.
+
+### The (legacy) static token
+
 The token is the `SecretString` of a Secrets Manager secret. The template parameter `McpAuthTokenSecretName` is the **name** of that secret (default `toolweave/mcp-auth-token`). The token is not a CloudFormation parameter and is not stored in this repository. The Lambda reads it with `secretsmanager:GetSecretValue` on that secret only, and caches a successful read for 60 seconds. A missing name, a missing secret, an empty secret, a missing header, or a wrong token all fail closed: HTTP 401 with a JSON-RPC error (`code` `-32001`). Nothing in that response says which of those it was.
 
 Create the secret before the deploy that turns this check on. The workflow does not create it. If the secret is not there yet, the stack can still deploy, and every `/mcp` call returns 401 until the secret exists. Creating or rotating it does not need another deploy. After a rotation, wait for the 60 second cache or start a new execution environment.
@@ -336,7 +359,7 @@ Pseudo-sequence for a client:
 
 ## Security and safety model
 
-- **`/mcp` requires `Authorization: Bearer <token>`.** The token is loaded from Secrets Manager. A missing or empty secret fails closed.
+- **`/mcp` requires `Authorization: Bearer <token>`.** A CipherWeave access token for `toolweave`, or — while `AcceptLegacyToken` is true — the static token loaded from Secrets Manager. A missing or empty secret fails closed.
 - **Read operations (`GET`)** execute directly.
 - **Write operations** are gated through proposal/commit workflow.
 - Proposals are scored by `mcp-observatory` and can be blocked before execution.
