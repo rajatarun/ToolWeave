@@ -8,3 +8,6 @@ mcp-observatory[aws]>=0.3.0
 python-dotenv>=1.0.0
 mangum>=0.19.0
 uvicorn>=0.30.0
+# ES256 check for CipherWeave access tokens. cipherweave_verify itself is
+# installed into src/ by the deploy workflow from requirements-cipherweave.txt.
+cryptography>=41.0.0

@@ -29,3 +29,7 @@ env/
 
 # OS
 .DS_Store
+
+# Installed into src/ by the deploy workflow from requirements-cipherweave.txt
+src/cipherweave_verify/
+src/cipherweave_verify-*.dist-info/
