@@ -10,7 +10,7 @@ It combines:
 
 ## What ToolWeave does
 
-ToolWeave exposes four MCP tools:
+ToolWeave exposes five MCP tools:
 
 1. **`pre_tool`**
    - Accepts a user prompt.
