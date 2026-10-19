@@ -107,6 +107,25 @@ jobs:
               exit 1
             fi
           fi
+          # Take the JWKS now, on the runner, so /mcp needs no network call to
+          # verify (the function's VPC reaches the internet only through the
+          # NAT instance). Public keys only. A failed download is a warning:
+          # the URL is still passed, and the function fetches at runtime.
+          JWKS_B64=""
+          if [ -n "$JWKS_URL" ]; then
+            if JWKS_BODY=$(curl -sS --fail --max-time 15 "$JWKS_URL"); then
+              JWKS_MIN=$(printf '%s' "$JWKS_BODY" | jq -c '{keys: [.keys[]? | select(.kty == "EC" and .crv == "P-256" and (has("d") | not)) | {kid, kty, crv, x, y, use, alg}]}')
+              if [ "$(printf '%s' "$JWKS_MIN" | jq '.keys | length')" -gt 0 ]; then
+                JWKS_B64=$(printf '%s' "$JWKS_MIN" | base64 -w0)
+                echo "Deploy-time JWKS: $(printf '%s' "$JWKS_MIN" | jq -r '[.keys[].kid] | join(", ")')"
+              else
+                echo "::warning::$JWKS_URL has no ES256 key; /mcp will fetch the JWKS at runtime."
+              fi
+            else
+              echo "::warning::Could not download $JWKS_URL; /mcp will fetch the JWKS at runtime."
+            fi
+          fi
+          echo "jwks_b64=$JWKS_B64" >> "$GITHUB_OUTPUT"
           echo "jwks_url=$JWKS_URL" >> "$GITHUB_OUTPUT"
           echo "issuer_id=$ISSUER_ID" >> "$GITHUB_OUTPUT"
           echo "accept_legacy=$ACCEPT_LEGACY_TOKEN" >> "$GITHUB_OUTPUT"
@@ -128,6 +147,7 @@ jobs:
           MCP_AUTH_TOKEN_SECRET_NAME: ${{ vars.MCP_AUTH_TOKEN_SECRET_NAME || 'toolweave/mcp-auth-token' }}
           JWKS_URL: ${{ steps.cipherweave.outputs.jwks_url }}
           ISSUER_ID: ${{ steps.cipherweave.outputs.issuer_id }}
+          JWKS_B64: ${{ steps.cipherweave.outputs.jwks_b64 }}
           ACCEPT_LEGACY_TOKEN: ${{ steps.cipherweave.outputs.accept_legacy }}
         run: |
           SECRET_NAME="$(printf '%s' "$MCP_AUTH_TOKEN_SECRET_NAME" | tr -d '[:space:]')"
@@ -158,6 +178,11 @@ jobs:
             PARAM_OVERRIDES+=("CipherWeaveJwksUrl=${JWKS_URL}")
           else
             PARAM_OVERRIDES+=('ParameterKey=CipherWeaveJwksUrl,ParameterValue=""')
+          fi
+          if [ -n "$JWKS_B64" ]; then
+            PARAM_OVERRIDES+=("CipherWeaveJwks=${JWKS_B64}")
+          else
+            PARAM_OVERRIDES+=('ParameterKey=CipherWeaveJwks,ParameterValue=""')
           fi
           PARAM_OVERRIDES+=("CipherWeaveIssuer=${ISSUER_ID:-urn:cipherweave:prod}")
           PARAM_OVERRIDES+=("AcceptLegacyToken=${ACCEPT_LEGACY_TOKEN:-true}")

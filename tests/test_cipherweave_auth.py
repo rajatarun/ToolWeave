@@ -158,3 +158,23 @@ def test_template_and_workflow_wire_the_verifier():
     workflow = (REPO_ROOT / ".github" / "workflows" / "deploy.yml").read_text()
     assert "pip install --no-deps --target src/ -r requirements-cipherweave.txt" in workflow
     assert "IssuerJwksUrl" in workflow
+
+
+def _b64_jwks(issuer):
+    import base64
+
+    return base64.b64encode(json.dumps(issuer.jwks()).encode()).decode()
+
+
+def _offline(_url):
+    raise AssertionError("with a deploy-time JWKS the verifier must not fetch")
+
+
+def test_deploy_time_jwks_alone_verifies_with_no_network(issuer, secrets, server, monkeypatch):
+    monkeypatch.delenv("CIPHERWEAVE_JWKS_URL")
+    monkeypatch.setenv("CIPHERWEAVE_JWKS", _b64_jwks(issuer))
+    monkeypatch.setattr(cw_jwks, "http_fetcher", _offline)
+    reset_default_verifier()
+    assert _healthy(_health(server, issuer.mint(audience="toolweave")))
+    assert _health(server, issuer.mint(audience="deviceweave"))["statusCode"] == 401
+    assert "CIPHERWEAVE_JWKS: !Ref CipherWeaveJwks" in (REPO_ROOT / "template.yaml").read_text()
