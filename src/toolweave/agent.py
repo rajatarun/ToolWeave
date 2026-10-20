@@ -22,7 +22,7 @@ from typing import Any
 
 import boto3
 
-from . import catalog_search, data_dictionary_client, observatory as _obs
+from . import catalog_search, data_dictionary_client, modelweave_roles, observatory as _obs
 from .models import EndpointEntry, FieldMapping, PreToolResponse
 
 logger = logging.getLogger(__name__)
@@ -36,9 +36,13 @@ _bedrock = boto3.client(
     "bedrock-runtime",
     region_name=os.environ.get("AWS_REGION", "us-east-1"),
 )
+# The model comes from ModelWeave's "reasoning" role pin (modelweave_roles).
+# BEDROCK_MODEL_ID is only the fallback, used when no pin can be read. It was
+# anthropic.claude-3-haiku-20240307-v1:0 -- a model ModelWeave lists as retired.
+MODEL_ROLE = "reasoning"
 BEDROCK_MODEL_ID = os.environ.get(
     "BEDROCK_MODEL_ID",
-    "anthropic.claude-3-haiku-20240307-v1:0",
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
 )
 
 
@@ -218,7 +222,7 @@ async def run_agent(
 
     result = await _obs.get_agent_wrapper().invoke(
         source="agent",
-        model=BEDROCK_MODEL_ID,
+        model=modelweave_roles.model_for(MODEL_ROLE, BEDROCK_MODEL_ID),
         prompt=user_message,
         input_payload={"session_id": session_id, "catalog_size": len(catalog)},
         call=_inner,
@@ -271,8 +275,8 @@ async def _run_agent_inner(
 
     for _iteration in range(20):  # safety cap on tool-use loops
         # ---- Bedrock Converse call (sync boto3 wrapped in executor) ----
+        model_id = modelweave_roles.model_for(MODEL_ROLE, BEDROCK_MODEL_ID)
         converse_kwargs: dict[str, Any] = {
-            "modelId": BEDROCK_MODEL_ID,
             "system": [{"text": SYSTEM_PROMPT}],
             "messages": history,
             "toolConfig": {"tools": AGENT_TOOLS},
@@ -283,14 +287,20 @@ async def _run_agent_inner(
         try:
             kw = converse_kwargs
 
+            def _call() -> dict[str, Any]:
+                response, _used = modelweave_roles.converse(
+                    _bedrock, MODEL_ROLE, BEDROCK_MODEL_ID, **kw
+                )
+                return response
+
             async def _converse() -> dict[str, Any]:
-                return await loop.run_in_executor(None, lambda: _bedrock.converse(**kw))
+                return await loop.run_in_executor(None, _call)
 
             model_result = await _obs.get_model_wrapper().invoke(
                 source="model",
-                model=BEDROCK_MODEL_ID,
+                model=model_id,
                 prompt=json.dumps(history[-1], default=str),
-                input_payload={"modelId": kw.get("modelId", ""), "iteration": _iteration},
+                input_payload={"modelId": model_id, "iteration": _iteration},
                 call=_converse,
             )
             logger.info(
