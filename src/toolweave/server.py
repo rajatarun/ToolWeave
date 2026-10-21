@@ -45,6 +45,8 @@ _dd_context: str = ""
 
 mcp = FastMCP(
     "ToolWeave",
+    # Reported as serverInfo; without it the SDK reports its own version.
+    version="0.1.0",
     instructions=(
         "ToolWeave bridges natural-language requests to REST API calls via OpenAPI specs. "
         "Workflow: call pre_tool with a prompt → receive a plan → call post_tool with the plan "
