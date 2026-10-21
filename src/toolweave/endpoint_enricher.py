@@ -21,15 +21,19 @@ from typing import Any
 import boto3
 from botocore.config import Config
 
+from . import modelweave_roles
 from .models import EndpointEntry
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# Haiku is fast and cheap for structured enrichment; override via env var if needed.
+# The model comes from ModelWeave's "reasoning" role pin (modelweave_roles);
+# ENRICHER_MODEL_ID is only the fallback when no pin can be read. Structured
+# enrichment with a 4,096-token JSON answer is not a cheap-fast read.
+_ENRICHER_ROLE = "reasoning"
 _ENRICHER_MODEL_ID = os.environ.get(
     "ENRICHER_MODEL_ID",
-    "anthropic.claude-3-haiku-20240307-v1:0",
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
 )
 _CONNECT_TIMEOUT_SECONDS = int(os.environ.get("ENRICHER_CONNECT_TIMEOUT_SECONDS", "5"))
 _READ_TIMEOUT_SECONDS = int(os.environ.get("ENRICHER_READ_TIMEOUT_SECONDS", "20"))
@@ -165,8 +169,10 @@ def _enrich_one(
         _MAX_ATTEMPTS,
     )
 
-    response = _client().converse(
-        modelId=_ENRICHER_MODEL_ID,
+    response, _model = modelweave_roles.converse(
+        _client(),
+        _ENRICHER_ROLE,
+        _ENRICHER_MODEL_ID,
         system=[{"text": _SYSTEM_PROMPT}],
         messages=[{"role": "user", "content": [{"text": user_msg}]}],
         inferenceConfig={"maxTokens": 4096, "temperature": 0},
@@ -348,7 +354,7 @@ def enrich_endpoints(entries: list[EndpointEntry]) -> list[EndpointEntry]:
         "Starting endpoint enrichment: total=%d "
         "(model_id=%s, per_endpoint_timeout=%ss, total_timeout=%ss)",
         len(entries),
-        _ENRICHER_MODEL_ID,
+        modelweave_roles.model_for(_ENRICHER_ROLE, _ENRICHER_MODEL_ID),
         _PER_ENDPOINT_TIMEOUT_SECONDS,
         _TOTAL_ENRICHMENT_TIMEOUT_SECONDS,
     )

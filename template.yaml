@@ -27,15 +27,19 @@ Parameters:
     Default: "0.45"
     Description: Risk score threshold above which proposals are blocked
 
+  # Both are fallbacks only. The agent and the enricher take their model from
+  # ModelWeave's "reasoning" role pin (/modelweave/roles/reasoning) and use
+  # these when no pin can be read. The old default, Claude 3 Haiku, is a model
+  # ModelWeave lists as retired.
   BedrockModelId:
     Type: String
-    Default: "anthropic.claude-3-haiku-20240307-v1:0"
-    Description: Bedrock model ID for the Converse API agent
+    Default: "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    Description: Fallback Bedrock model for the Converse API agent (ModelWeave role reasoning)
 
   EnricherModelId:
     Type: String
-    Default: "anthropic.claude-3-haiku-20240307-v1:0"
-    Description: Bedrock model ID for the enricher / swagger-processor agent
+    Default: "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    Description: Fallback Bedrock model for the enricher (ModelWeave role reasoning)
 
   DataDictionaryUrl:
     Type: String
@@ -382,6 +386,10 @@ Resources:
                 Resource:
                   - "arn:aws:bedrock:*::foundation-model/*"
                   - !Sub "arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*"
+              # ModelWeave role pins: which model to call. Read only.
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/modelweave/roles/*"
               # Own DynamoDB tables
               - Effect: Allow
                 Action:
