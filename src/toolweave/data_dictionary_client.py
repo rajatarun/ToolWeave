@@ -18,34 +18,70 @@ DATA_DICTIONARY_URL = os.environ.get(
 _MCP_ENDPOINT = DATA_DICTIONARY_URL.rstrip("/") + "/mcp"
 _EXTERNAL_API_AUTH_HEADER = {"Authorization": "Bearer 123"}
 
+# MCP 2026-07-28 is stateless: version and capabilities ride on every request,
+# mirrored in headers. A server older than that refuses it with a 400 that
+# carries no 2026-07-28 error; the client then falls back to the handshake
+# revision's shape once and remembers it for the process.
+PROTOCOL_VERSION = "2026-07-28"
+_MODERN_ERROR_CODES = {-32020, -32021, -32022}
+_legacy_server: Optional[bool] = None
 
-async def _call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    """Send a single MCP tool call to the DataDictionary Lambda and return the result."""
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {
-            "name": tool_name,
-            "arguments": arguments,
-        },
-    }
+
+def _request(tool_name: str, arguments: dict[str, Any], *, modern: bool) -> tuple[dict, dict]:
+    params: dict[str, Any] = {"name": tool_name, "arguments": arguments}
     headers = {
         "Content-Type": "application/json",
         # Some MCP servers are strict about Accept negotiation for JSON-RPC.
         "Accept": "application/json, text/event-stream",
         **_EXTERNAL_API_AUTH_HEADER,
     }
+    if modern:
+        params["_meta"] = {
+            "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
+            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientInfo": {"name": "toolweave", "version": "0.1.0"},
+        }
+        headers.update({
+            "MCP-Protocol-Version": PROTOCOL_VERSION,
+            "Mcp-Method": "tools/call",
+            "Mcp-Name": tool_name,
+        })
+    return {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params}, headers
+
+
+def _is_modern_refusal(response: httpx.Response) -> bool:
+    try:
+        return (response.json().get("error") or {}).get("code") in _MODERN_ERROR_CODES
+    except (ValueError, AttributeError):
+        return False
+
+
+def _parse_body(resp: httpx.Response) -> Any:
+    if "text/event-stream" in resp.headers.get("content-type", ""):
+        data = [line[5:].strip() for line in resp.text.splitlines() if line.startswith("data:")]
+        return json.loads(data[-1]) if data else {}
+    return resp.json()
+
+
+async def _call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
+    """Send a single MCP tool call to the DataDictionary Lambda and return the result."""
+    global _legacy_server
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                _MCP_ENDPOINT,
-                json=payload,
-                headers=headers,
-            )
+            resp = None
+            if not _legacy_server:
+                payload, headers = _request(tool_name, arguments, modern=True)
+                resp = await client.post(_MCP_ENDPOINT, json=payload, headers=headers)
+                if resp.status_code == 400 and not _is_modern_refusal(resp):
+                    _legacy_server, resp = True, None
+                elif resp.is_success:
+                    _legacy_server = False
+            if resp is None:
+                payload, headers = _request(tool_name, arguments, modern=False)
+                resp = await client.post(_MCP_ENDPOINT, json=payload, headers=headers)
             resp.raise_for_status()
-            body = resp.json()
+            body = _parse_body(resp)
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code
         text = exc.response.text
