@@ -391,3 +391,14 @@ ruff check .
 ## License
 
 See [LICENSE](LICENSE).
+
+## Cost attribution
+
+The stack is deployed with `repo=ToolWeave`, which CloudFormation copies onto
+every resource. Bedrock calls go through this stack's own application inference
+profiles (Claude Haiku 4.5, Nova Pro and Llama 3.3 70B: the `reasoning`
+candidates), tagged the same way. Model spend is therefore billed to ToolWeave
+too. `src/toolweave/bedrock_cost.py` is vendored from ModelWeave and checksummed
+in `BEDROCK_COST_VENDORED.json`. If a profile is refused, the call falls back to
+the model id and logs it, so attribution never costs a call. `BedrockCostAttribution=off`
+disables it. Read the costs back with ModelWeave's `scripts/weave_costs.py --repo ToolWeave [--llm]`.

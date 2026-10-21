@@ -22,7 +22,7 @@ from typing import Any
 
 import boto3
 
-from . import catalog_search, data_dictionary_client, modelweave_roles, observatory as _obs
+from . import bedrock_cost, catalog_search, data_dictionary_client, modelweave_roles, observatory as _obs
 from .models import EndpointEntry, FieldMapping, PreToolResponse
 
 logger = logging.getLogger(__name__)
@@ -32,10 +32,12 @@ logger.setLevel(logging.INFO)
 # Bedrock client (module-level; boto3 is thread-safe for separate clients)
 # ---------------------------------------------------------------------------
 
-_bedrock = boto3.client(
+# Through this stack's tagged application inference profiles, so the calls
+# are billed to ToolWeave (bedrock_cost.py).
+_bedrock = bedrock_cost.attribute(boto3.client(
     "bedrock-runtime",
     region_name=os.environ.get("AWS_REGION", "us-east-1"),
-)
+))
 # The model comes from ModelWeave's "reasoning" role pin (modelweave_roles).
 # BEDROCK_MODEL_ID is only the fallback, used when no pin can be read. It was
 # anthropic.claude-3-haiku-20240307-v1:0 -- a model ModelWeave lists as retired.
