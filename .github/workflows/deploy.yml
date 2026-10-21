@@ -163,7 +163,11 @@ jobs:
           sam deploy \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
-            --parameter-overrides "${PARAM_OVERRIDES[@]}"
+            --parameter-overrides "${PARAM_OVERRIDES[@]}" \
+            --tags repo=ToolWeave
+          # repo=<RepoName> on the stack is copied onto every resource it
+          # creates, so Cost Explorer splits the bill by repository; the
+          # Bedrock profiles carry the same tag (ModelWeave scripts/weave_costs.py).
 
       # ------------------------------------------------------------------
       # Publish the API specs ToolWeave serves.
