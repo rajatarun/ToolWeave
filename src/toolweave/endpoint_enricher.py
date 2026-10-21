@@ -21,7 +21,7 @@ from typing import Any
 import boto3
 from botocore.config import Config
 
-from . import modelweave_roles
+from . import bedrock_cost, modelweave_roles
 from .models import EndpointEntry
 
 logger = logging.getLogger(__name__)
@@ -100,7 +100,8 @@ def _client() -> Any:
             _READ_TIMEOUT_SECONDS,
             _MAX_ATTEMPTS,
         )
-        _BEDROCK_CLIENT = boto3.client(
+        # Billed to ToolWeave through its tagged inference profiles (bedrock_cost.py).
+        _BEDROCK_CLIENT = bedrock_cost.attribute(boto3.client(
             "bedrock-runtime",
             region_name=os.environ.get("AWS_REGION", "us-east-1"),
             config=Config(
@@ -108,7 +109,7 @@ def _client() -> Any:
                 read_timeout=_READ_TIMEOUT_SECONDS,
                 retries={"max_attempts": _MAX_ATTEMPTS, "mode": "standard"},
             ),
-        )
+        ))
     return _BEDROCK_CLIENT
 
 
