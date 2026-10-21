@@ -8,6 +8,15 @@ Description: >
 # Parameters — all have defaults; no required overrides at deploy time
 # ---------------------------------------------------------------------------
 Parameters:
+  BedrockCostAttribution:
+    Type: String
+    Default: 'on'
+    AllowedValues: ['on', 'off']
+    Description: >
+      Send Bedrock calls through this stack's application inference profiles,
+      tagged repo=<RepoName>, so model spend is billed to this repository
+      (bedrock_cost.py). 'off' calls the model ids directly, unattributed.
+
   SharedStackName:
     Type: String
     Default: tarun-teamweave-shared
@@ -124,6 +133,8 @@ Globals:
         OBSERVATORY_BLOCK_THRESHOLD: !Ref ObservatoryBlockThreshold
         BEDROCK_MODEL_ID: !Ref BedrockModelId
         ENRICHER_MODEL_ID: !Ref EnricherModelId
+        BEDROCK_PROFILE_ARNS: !Sub '{"us.anthropic.claude-haiku-4-5-20251001-v1:0": "${BedrockProfileClaudeHaiku45.InferenceProfileArn}", "us.amazon.nova-pro-v1:0": "${BedrockProfileNovaPro.InferenceProfileArn}", "us.meta.llama3-3-70b-instruct-v1:0": "${BedrockProfileLlama3370B.InferenceProfileArn}"}'
+        BEDROCK_COST_ATTRIBUTION: !Ref BedrockCostAttribution
         DATA_DICTIONARY_URL: !Ref DataDictionaryUrl
         TOOLWEAVE_LOG_CONVERSE_MESSAGES: "true"
         TOOLWEAVE_LOG_CONVERSE_RAW_RESPONSES: "true"
@@ -132,6 +143,43 @@ Globals:
 # Resources
 # ---------------------------------------------------------------------------
 Resources:
+  # One application inference profile per model this stack's calls can resolve
+  # to. A call through it is billed with its tags, so model spend lands under
+  # repo=ToolWeave in Cost Explorer beside the rest of the stack (bedrock_cost.py).
+  # A profile costs nothing by itself.
+  BedrockProfileClaudeHaiku45:
+    Type: AWS::Bedrock::ApplicationInferenceProfile
+    Properties:
+      InferenceProfileName: !Sub ${AWS::StackName}-claude-haiku-4-5
+      Description: us.anthropic.claude-haiku-4-5-20251001-v1:0 billed to ToolWeave
+      ModelSource:
+        CopyFrom: !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0
+      Tags:
+        - Key: repo
+          Value: ToolWeave
+
+  BedrockProfileNovaPro:
+    Type: AWS::Bedrock::ApplicationInferenceProfile
+    Properties:
+      InferenceProfileName: !Sub ${AWS::StackName}-nova-pro
+      Description: us.amazon.nova-pro-v1:0 billed to ToolWeave
+      ModelSource:
+        CopyFrom: !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.amazon.nova-pro-v1:0
+      Tags:
+        - Key: repo
+          Value: ToolWeave
+
+  BedrockProfileLlama3370B:
+    Type: AWS::Bedrock::ApplicationInferenceProfile
+    Properties:
+      InferenceProfileName: !Sub ${AWS::StackName}-llama3-3-70b
+      Description: us.meta.llama3-3-70b-instruct-v1:0 billed to ToolWeave
+      ModelSource:
+        CopyFrom: !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.meta.llama3-3-70b-instruct-v1:0
+      Tags:
+        - Key: repo
+          Value: ToolWeave
+
 
   # ---- Custom resource: resolve shared stack outputs + derive VPC ID ----
   # Reads LambdaSubnetIds, ObservatoryMetrics table, and VpcId (derived from
@@ -386,6 +434,10 @@ Resources:
                 Resource:
                   - "arn:aws:bedrock:*::foundation-model/*"
                   - !Sub "arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*"
+                  # This stack's own tagged profiles (bedrock_cost.py), and no one else's.
+                  - !GetAtt BedrockProfileClaudeHaiku45.InferenceProfileArn
+                  - !GetAtt BedrockProfileNovaPro.InferenceProfileArn
+                  - !GetAtt BedrockProfileLlama3370B.InferenceProfileArn
               # ModelWeave role pins: which model to call. Read only.
               - Effect: Allow
                 Action: ssm:GetParameter
