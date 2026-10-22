@@ -2,14 +2,32 @@ from __future__ import annotations
 
 import time
 from typing import Any, Optional
-from urllib.parse import urljoin
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from . import api_credentials
 from .models import ImmediateExecutionResult
-from .plan_guard import EgressDenied, check_egress
+from .plan_guard import EgressDenied, resolve_egress
 
-_EXTERNAL_API_AUTH_HEADER = {"Authorization": "Bearer 123"}
+
+def _pin(url: str, address: str | None) -> tuple[str, dict[str, str], dict[str, Any]]:
+    """Connect to ``address`` while the request still names the original host.
+
+    Returns (url to connect to, extra headers, httpx extensions). ``Host``
+    keeps the name for virtual hosting; for https the SNI name, which is also
+    the name the certificate is checked against, stays the original host.
+    """
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    if not address or address == host:
+        return url, {}, {}
+    connect_host = f"[{address}]" if ":" in address else address
+    netloc = connect_host + (f":{parts.port}" if parts.port else "")
+    pinned = urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    host_header = host + (f":{parts.port}" if parts.port else "")
+    extensions = {"sni_hostname": host} if parts.scheme == "https" else {}
+    return pinned, {"Host": host_header}, extensions
 
 
 async def execute_get(
@@ -18,9 +36,12 @@ async def execute_get(
     query_params: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
     timeout: float = 30.0,
+    api_id: str = "",
 ) -> ImmediateExecutionResult:
     url = _build_url(base_url, path)
-    return await _request("GET", url, query_params=query_params, headers=headers, timeout=timeout)
+    return await _request(
+        "GET", url, query_params=query_params, headers=headers, timeout=timeout, api_id=api_id
+    )
 
 
 async def execute_write(
@@ -31,6 +52,7 @@ async def execute_write(
     headers: dict[str, str] | None = None,
     body: Optional[dict[str, Any]] = None,
     timeout: float = 30.0,
+    api_id: str = "",
 ) -> ImmediateExecutionResult:
     url = _build_url(base_url, path)
     return await _request(
@@ -40,6 +62,7 @@ async def execute_write(
         headers=headers,
         body=body,
         timeout=timeout,
+        api_id=api_id,
     )
 
 
@@ -50,30 +73,39 @@ async def _request(
     headers: dict[str, str] | None = None,
     body: Optional[dict[str, Any]] = None,
     timeout: float = 30.0,
+    api_id: str = "",
 ) -> ImmediateExecutionResult:
     start = time.monotonic()
     try:
         # Checked here, at the last step, so a GET and a committed write are
-        # held to the same rule whichever path built the URL.
-        check_egress(url)
+        # held to the same rule whichever path built the URL. The address the
+        # check approved is the one connected to.
+        address = resolve_egress(url)
     except EgressDenied as exc:
         return ImmediateExecutionResult(
             method=method, url=url, status_code=0, error=f"Destination refused: {exc}"
         )
     try:
+        credential = api_credentials.headers_for(api_id, url)
+    except api_credentials.CredentialUnavailable as exc:
+        return ImmediateExecutionResult(
+            method=method, url=url, status_code=0, error=f"API credential unavailable: {exc}"
+        )
+    connect_url, pin_headers, extensions = _pin(url, address)
+    try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-            merged_headers = {
-                **_EXTERNAL_API_AUTH_HEADER,
-                **(headers or {}),
-            }
+            # Plan headers first; the credential and Host win over them.
+            merged_headers = {**(headers or {}), **credential, **pin_headers}
             kwargs: dict[str, Any] = {
                 "params": query_params or {},
                 "headers": merged_headers,
             }
+            if extensions:
+                kwargs["extensions"] = extensions
             if body is not None:
                 kwargs["json"] = body
 
-            resp = await client.request(method, url, **kwargs)
+            resp = await client.request(method, connect_url, **kwargs)
             elapsed_ms = (time.monotonic() - start) * 1000
 
             try:

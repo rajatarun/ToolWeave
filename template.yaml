@@ -459,6 +459,11 @@ Resources:
               - Effect: Allow
                 Action: ssm:GetParameter
                 Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/modelweave/roles/*"
+              # Per-API credentials for the cataloged APIs (api_credentials.py):
+              # toolweave/api/<api_id>, read only, nothing else.
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:toolweave/api/*"
               # Own DynamoDB tables
               - Effect: Allow
                 Action:

@@ -313,12 +313,14 @@ def test_template_names_the_secret_and_rejects_a_blank_name():
     assert "MCP_AUTH_TOKEN_SECRET_NAME: !Ref McpAuthTokenSecretName" in text
     assert "secretsmanager:GetSecretValue" in text
     assert "secret:${McpAuthTokenSecretName}-*" in text
-    # The grant is this secret only. A wildcard resource would let the
-    # function read every secret in the account.
-    secret_stmt = text.split("secretsmanager:GetSecretValue", 1)[1].split("Resource:", 1)[1]
-    secret_stmt = secret_stmt.split("\n", 1)[0]
-    assert "McpAuthTokenSecretName" in secret_stmt
-    assert secret_stmt.strip() != '"*"'
+    # Each secrets grant names its secret (or prefix). A wildcard resource
+    # would let the function read every secret in the account.
+    resources = [
+        part.split("Resource:", 1)[1].split("\n", 1)[0].strip()
+        for part in text.split("secretsmanager:GetSecretValue")[1:]
+    ]
+    assert any("McpAuthTokenSecretName" in r for r in resources)
+    assert all(r not in ('"*"', "'*'", "*") and ":secret:" in r for r in resources), resources
     assert "Bearer " not in text
     assert re.search(r"SecretString:\s*\S", text) is None
 
