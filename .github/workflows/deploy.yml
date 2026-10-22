@@ -4,6 +4,11 @@ on:
   push:
     branches:
       - main
+  # Pull requests run every check except the deploy, so a PR is tested
+  # before it merges rather than after.
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -60,9 +65,26 @@ jobs:
           "$RUNNER_TEMP/gitleaks" version
           "$RUNNER_TEMP/gitleaks" git --redact --no-banner --exit-code 1 .
 
+  # Tests are a gate: deploy needs this job. Runs on pull requests too.
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
   deploy:
-    needs: [audit, secrets]
+    needs: [test, audit, secrets]
     name: SAM Build & Deploy
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
 
     steps:
@@ -85,13 +107,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      # ------------------------------------------------------------------
-      # Tests — offline, and a gate: a failing test stops the deploy.
-      # ------------------------------------------------------------------
-      - name: Unit tests
-        run: |
-          pip install -e ".[dev]"
-          python -m pytest tests/ -q
+      # The tests ran in the test job. scripts/publish_specs.py below
+      # imports toolweave, so the package is still installed here.
+      - name: Install
+        run: pip install -e ".[dev]"
 
       # ------------------------------------------------------------------
       # Validate (catches CFN/SAM syntax errors before build)
