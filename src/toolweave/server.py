@@ -10,10 +10,13 @@ Exposes four MCP tools:
 
 Lambda entry point: lambda_handler (via Mangum).
 
-Every /mcp request must send ``Authorization: Bearer <token>``. The token
-is the SecretString of the Secrets Manager secret named by
-``MCP_AUTH_TOKEN_SECRET_NAME``. A missing, wrong, or unavailable token is
-HTTP 401 with a JSON-RPC error. Other routes are not checked.
+Every /mcp request must send ``Authorization: Bearer <token>`` (a
+CipherWeave token for ``toolweave``, or the legacy static token while
+allowed) or ``DPoP <token>`` with a proof. A missing, wrong, or unavailable
+token is HTTP 401 with a JSON-RPC error; a tool the token lacks the scope for
+is HTTP 403 (``mcp_auth``). ``post_tool`` binds its plan to the catalog and
+the executor refuses non-public destinations (``plan_guard``).
+GET /.well-known/oauth-protected-resource serves RFC 9728 metadata.
 """
 
 import contextlib
@@ -26,7 +29,7 @@ from typing import Any, Optional
 from fastmcp import FastMCP
 from mangum import Mangum
 
-from . import agent, dynamodb_client, executor, mcp_auth, observatory
+from . import agent, dynamodb_client, executor, mcp_auth, observatory, plan_guard
 from .models import CommitResult, ImmediateExecutionResult, PreToolResponse, ProposalResult
 
 logger = logging.getLogger(__name__)
@@ -149,35 +152,46 @@ async def post_tool(api_call_plan: dict[str, Any]) -> dict[str, Any]:
                 "error": f"Plan status is '{plan.status}' — only 'ready' plans can be executed."
             }
 
-        if plan.execution_type == "immediate":
+        # The plan is a tool argument: bind it to the catalog, so only a
+        # cataloged endpoint can be called, whatever the caller sent.
+        try:
+            bound = plan_guard.bind(plan, _catalog)
+        except plan_guard.PlanRejected as exc:
+            logger.warning("post_tool plan rejected reason=%s", exc)
+            return {"error": f"Plan rejected: {exc}"}
+
+        # Reads run now; anything else is a proposal, whatever the plan's
+        # execution_type says -- the method decides, not the caller.
+        if bound.method == "GET":
             result: ImmediateExecutionResult = await executor.execute_get(
-                base_url=plan.base_url,
-                path=plan.path,
-                query_params=plan.query_params or None,
-                headers=plan.headers or None,
+                base_url=bound.base_url,
+                path=bound.path,
+                query_params=bound.query_params or None,
+                headers=bound.headers or None,
             )
             return result.model_dump()
 
         # --- proposal for write operations ---
         tool_args = {
-            "method": plan.method,
-            "url": executor._build_url(plan.base_url, plan.path),
-            "query_params": plan.query_params,
-            "body": plan.body,
+            "method": bound.method,
+            "url": executor._build_url(bound.base_url, bound.path),
+            "query_params": bound.query_params,
+            "headers": bound.headers,
+            "body": bound.body,
         }
         proposal = await observatory.propose(
             tool_name="commit_api_call",
             tool_args=tool_args,
             prompt=plan.prompt or f"{plan.method} {plan.path}",
-            method=plan.method,
-            path=plan.path,
+            method=bound.method,
+            path=bound.path,
         )
 
         status = proposal.get("status", "blocked")
         result_obj = ProposalResult(
-            method=plan.method,
-            url=executor._build_url(plan.base_url, plan.path),
-            body=plan.body,
+            method=bound.method,
+            url=executor._build_url(bound.base_url, bound.path),
+            body=bound.body,
             status=status,  # type: ignore[arg-type]
             proposal_id=proposal.get("proposal_id", ""),
             commit_token=proposal.get("commit_token"),
@@ -185,7 +199,7 @@ async def post_tool(api_call_plan: dict[str, Any]) -> dict[str, Any]:
             signals=proposal.get("signals", {}),
             next_step=(
                 f"Call commit_api_call(proposal_id='{proposal.get('proposal_id')}', "
-                f"commit_token='...') to execute this {plan.method} request."
+                f"commit_token='...') to execute this {bound.method} request."
             )
             if status == "allowed"
             else "Proposal was blocked by mcp-observatory risk scoring.",
@@ -240,12 +254,14 @@ async def commit_api_call(proposal_id: str, commit_token: str) -> dict[str, Any]
         url: str = tool_args.get("url", "")
         body = tool_args.get("body")
         query_params = tool_args.get("query_params") or {}
+        headers = tool_args.get("headers") or {}
 
         exec_result: ImmediateExecutionResult = await executor.execute_write(
             method=method,
             base_url="",   # url is already fully resolved
             path=url,
             query_params=query_params or None,
+            headers=headers or None,
             body=body,
         )
 
@@ -330,9 +346,15 @@ async def reload_catalog() -> dict[str, Any]:
 def lambda_handler(event: dict[str, Any], context: Any) -> Any:
     # Reject unauthenticated /mcp calls before any catalog or tool work.
     # A missing secret fails closed here; it must not fall through to Mangum.
-    rejection = mcp_auth.reject_if_unauthorized(event)
+    if mcp_auth.is_resource_metadata_path(event):
+        return mcp_auth.resource_metadata_response(event)
+    rejection, principal = mcp_auth.authenticate(event)
     if rejection is not None:
         return rejection
+    # Per-tool scopes, before the body reaches FastMCP.
+    refusal = mcp_auth.authorize_request(event, principal)
+    if refusal is not None:
+        return refusal
 
     # Load catalog on first (cold) invocation.  Subsequent warm invocations
     # reuse the module-level _catalog list unless reload_catalog is called.

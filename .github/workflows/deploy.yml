@@ -122,6 +122,7 @@ jobs:
           ISSUER_ID: ${{ steps.cipherweave.outputs.issuer_id }}
           JWKS_B64: ${{ steps.cipherweave.outputs.jwks_b64 }}
           ACCEPT_LEGACY_TOKEN: ${{ steps.cipherweave.outputs.accept_legacy }}
+          TOOL_SCOPE_MODE: ${{ vars.TOOL_SCOPE_MODE || 'enforce' }}
         run: |
           SECRET_NAME="$(printf '%s' "$MCP_AUTH_TOKEN_SECRET_NAME" | tr -d '[:space:]')"
           if [ -z "$SECRET_NAME" ]; then
@@ -159,6 +160,7 @@ jobs:
           fi
           PARAM_OVERRIDES+=("CipherWeaveIssuer=${ISSUER_ID:-urn:cipherweave:prod}")
           PARAM_OVERRIDES+=("AcceptLegacyToken=${ACCEPT_LEGACY_TOKEN:-true}")
+          PARAM_OVERRIDES+=("ToolScopeMode=$([ "${TOOL_SCOPE_MODE}" = audit ] && echo audit || echo enforce)")
 
           sam deploy \
             --no-confirm-changeset \

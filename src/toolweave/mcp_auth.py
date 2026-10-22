@@ -20,6 +20,23 @@ fail closed the same way: HTTP 401 with a JSON-RPC error. The body does not
 say which of those happened.
 
 Routes other than ``/mcp`` are not checked.
+
+**Per-tool authorization** (``authorize_request``), after authentication, is
+``cipherweave_verify.ToolAuthorizer`` -- the same code ContextWeave and
+DeviceWeave run. ``pre_tool`` and ``health`` need ``read``; ``post_tool``
+(runs GETs, opens proposals) and ``reload_catalog`` need ``execute``;
+``commit_api_call`` (sends the write) needs ``execute`` and cannot be called
+with a delegated token -- an agent acting for someone may plan and propose a
+write, but the commit comes from the principal. An undeclared tool gets the
+strictest policy. ``CIPHERWEAVE_SCOPE_MODE=audit`` logs scope failures
+instead of refusing them, during rollout; the delegation rule holds in both
+modes. A refusal is HTTP 403 with an RFC 6750 ``insufficient_scope``
+challenge.
+
+``Authorization: DPoP <token>`` with a ``DPoP`` proof is accepted for a
+sender-constrained CipherWeave token (RFC 9449), and every 401 names this
+server's RFC 9728 metadata (``resource_metadata``) when CipherWeave is
+configured.
 """
 
 from __future__ import annotations
@@ -33,7 +50,21 @@ import re
 import time
 from typing import Any
 
-from cipherweave_verify import BearerAuth
+from cipherweave_verify import (
+    EXECUTE,
+    READ,
+    WELL_KNOWN_PATH,
+    AuthDecision,
+    AuthorizationError,
+    BearerAuth,
+    Principal,
+    ToolAuthorizer,
+    ToolPolicy,
+    api_gateway_request,
+    default_authorization_server,
+    protected_resource_metadata,
+    www_authenticate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -270,7 +301,24 @@ def _peek_id(event: dict) -> Any:
     return ident if _is_valid_id(ident) else None
 
 
-def unauthorized_response(req_id: Any) -> dict[str, Any]:
+_DPOP_REASONS = frozenset({"dpop_required", "invalid_dpop_proof", "token_not_dpop_bound"})
+
+
+def _challenge(event: dict | None, reason: str | None) -> str:
+    _method, _url, base = api_gateway_request(event or {})
+    return www_authenticate(
+        realm="toolweave",
+        error="invalid_token" if reason not in (None, "missing") else None,
+        resource_metadata=(base + WELL_KNOWN_PATH)
+        if base and default_authorization_server()
+        else None,
+        dpop=reason in _DPOP_REASONS,
+    )
+
+
+def unauthorized_response(
+    req_id: Any, event: dict | None = None, reason: str | None = None
+) -> dict[str, Any]:
     """One body for every failure. Missing, malformed, and wrong tokens look the same."""
     ident = req_id if _is_valid_id(req_id) else None
     return {
@@ -278,7 +326,7 @@ def unauthorized_response(req_id: Any) -> dict[str, Any]:
         "headers": {
             "Content-Type": "application/json",
             "Cache-Control": "no-store",
-            "WWW-Authenticate": 'Bearer realm="toolweave"',
+            "WWW-Authenticate": _challenge(event, reason),
         },
         "body": json.dumps(
             {
@@ -294,16 +342,119 @@ def unauthorized_response(req_id: Any) -> dict[str, Any]:
 # CipherWeave token never reads Secrets Manager.
 _bearer_auth = BearerAuth(TOKEN_AUDIENCE, legacy_token=lambda: read_configured_token())
 
+TOOL_POLICIES: dict[str, ToolPolicy] = {
+    "pre_tool": READ,
+    "health": READ,
+    "post_tool": EXECUTE,
+    "reload_catalog": EXECUTE,
+    "commit_api_call": ToolPolicy("execute", delegable=False),
+}
+_authorizer = ToolAuthorizer(TOOL_POLICIES)
+
+
+def authenticate(event: dict) -> tuple[dict[str, Any] | None, Principal | None]:
+    """(401 response, None) or (None, principal). Non-``/mcp`` routes are (None, None)."""
+    if not isinstance(event, dict) or not is_mcp_path(event):
+        return None, None
+    decision: AuthDecision = _bearer_auth.check_event(event)
+    if not decision.ok:
+        logger.warning("MCP unauthorized reason=%s", decision.reason)
+        return unauthorized_response(_peek_id(event), event, decision.reason), None
+    return None, decision.principal or Principal("unknown", None, frozenset())
+
 
 def reject_if_unauthorized(event: dict) -> dict[str, Any] | None:
     """Return a 401 Lambda response, or None when the request may proceed.
 
     Non-``/mcp`` routes return None without reading the secret.
     """
-    if not isinstance(event, dict) or not is_mcp_path(event):
+    rejection, _principal = authenticate(event)
+    return rejection
+
+
+def _tool_calls(event: dict) -> list[tuple[Any, str]]:
+    """(id, tool name) of every tools/call in the body, batches included."""
+    raw = _raw_body(event).strip()
+    if not raw:
+        return []
+    try:
+        message = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    messages = message if isinstance(message, list) else [message]
+    calls = []
+    for item in messages:
+        if isinstance(item, dict) and item.get("method") == "tools/call":
+            params = item.get("params") if isinstance(item.get("params"), dict) else {}
+            name = params.get("name")
+            calls.append((item.get("id"), name if isinstance(name, str) else ""))
+    return calls
+
+
+def forbidden_response(req_id: Any, exc: AuthorizationError, tool: str) -> dict[str, Any]:
+    ident = req_id if _is_valid_id(req_id) else None
+    scope = _authorizer.policy(tool).scope
+    return {
+        "statusCode": 403,
+        "headers": {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            "WWW-Authenticate": www_authenticate(
+                realm="toolweave", error="insufficient_scope", scope=scope
+            ),
+        },
+        "body": json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": ident,
+                "error": {"code": -32003, "message": f"Forbidden: {exc.reason}"},
+            }
+        ),
+    }
+
+
+def authorize_request(event: dict, principal: Principal | None) -> dict[str, Any] | None:
+    """A 403 response if any tools/call in the request is not allowed, else None."""
+    if principal is None:
         return None
-    presented = extract_bearer(event.get("headers"))
-    if not _bearer_auth.check(presented).ok:
-        logger.warning("MCP unauthorized")
-        return unauthorized_response(_peek_id(event))
+    for req_id, tool in _tool_calls(event):
+        try:
+            _authorizer.authorize(principal, tool)
+        except AuthorizationError as exc:
+            logger.warning(
+                "mcp_tool_refused tool=%s reason=%s sub=%s", tool, exc.reason, principal.subject
+            )
+            return forbidden_response(req_id, exc, tool)
+        fields = principal.log_fields()
+        logger.info("mcp_tool_call %s", json.dumps({"tool": tool, **fields}, sort_keys=True))
     return None
+
+
+def resource_metadata_response(event: dict) -> dict[str, Any]:
+    """RFC 9728 document for ``/mcp``; 404 when no CipherWeave is configured."""
+    server = default_authorization_server()
+    _method, _url, base = api_gateway_request(event)
+    if not server or not base:
+        return {
+            "statusCode": 404,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"error": "not_found"}),
+        }
+    document = protected_resource_metadata(
+        resource=base + "/mcp",
+        authorization_servers=[server],
+        scopes_supported=sorted({p.scope for p in TOOL_POLICIES.values()}),
+        resource_name="ToolWeave",
+    )
+    document["audience"] = TOKEN_AUDIENCE
+    return {
+        "statusCode": 200,
+        "headers": {"Content-Type": "application/json", "Cache-Control": "public, max-age=300"},
+        "body": json.dumps(document),
+    }
+
+
+def is_resource_metadata_path(event: dict) -> bool:
+    return any(
+        c.split("?", 1)[0].rstrip("/").endswith(WELL_KNOWN_PATH) for c in _path_candidates(event)
+    )
