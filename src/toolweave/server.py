@@ -168,6 +168,7 @@ async def post_tool(api_call_plan: dict[str, Any]) -> dict[str, Any]:
                 path=bound.path,
                 query_params=bound.query_params or None,
                 headers=bound.headers or None,
+                api_id=bound.entry.api_id,
             )
             return result.model_dump()
 
@@ -178,6 +179,9 @@ async def post_tool(api_call_plan: dict[str, Any]) -> dict[str, Any]:
             "query_params": bound.query_params,
             "headers": bound.headers,
             "body": bound.body,
+            # Bound under the commit token like the rest: the commit uses the
+            # credential of the API that was proposed, not one it names later.
+            "api_id": bound.entry.api_id,
         }
         proposal = await observatory.propose(
             tool_name="commit_api_call",
@@ -263,6 +267,7 @@ async def commit_api_call(proposal_id: str, commit_token: str) -> dict[str, Any]
             query_params=query_params or None,
             headers=headers or None,
             body=body,
+            api_id=str(tool_args.get("api_id") or ""),
         )
 
         if exec_result.error:
