@@ -25,8 +25,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: pip-audit
@@ -50,7 +50,7 @@ jobs:
       GITLEAKS_VERSION: 8.28.0
       GITLEAKS_SHA256: a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Install gitleaks
@@ -72,8 +72,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Install
@@ -89,21 +89,21 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: arn:aws:iam::239571291755:role/teamweave-github-actions-sam-deployer
           aws-region: us-east-1
 
       - name: Set up AWS SAM CLI
-        uses: aws-actions/setup-sam@v2
+        uses: aws-actions/setup-sam@341eee193f458fa5aae5d52c94b0c5cf3a1c5a52 # v3
         with:
           use-installer: true
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -192,6 +192,7 @@ jobs:
           JWKS_B64: ${{ steps.cipherweave.outputs.jwks_b64 }}
           ACCEPT_LEGACY_TOKEN: ${{ steps.cipherweave.outputs.accept_legacy }}
           TOOL_SCOPE_MODE: ${{ vars.TOOL_SCOPE_MODE || 'enforce' }}
+          ALERT_EMAIL: ${{ vars.ALERT_EMAIL }}
         run: |
           SECRET_NAME="$(printf '%s' "$MCP_AUTH_TOKEN_SECRET_NAME" | tr -d '[:space:]')"
           if [ -z "$SECRET_NAME" ]; then
@@ -230,6 +231,13 @@ jobs:
           PARAM_OVERRIDES+=("CipherWeaveIssuer=${ISSUER_ID:-urn:cipherweave:prod}")
           PARAM_OVERRIDES+=("AcceptLegacyToken=${ACCEPT_LEGACY_TOKEN:-true}")
           PARAM_OVERRIDES+=("ToolScopeMode=$([ "${TOOL_SCOPE_MODE}" = audit ] && echo audit || echo enforce)")
+          # Ops alerts go to the repository variable ALERT_EMAIL; unset keeps
+          # the topic and alarm with no subscriber.
+          if [ -n "$ALERT_EMAIL" ]; then
+            PARAM_OVERRIDES+=("AlertEmail=${ALERT_EMAIL}")
+          else
+            PARAM_OVERRIDES+=('ParameterKey=AlertEmail,ParameterValue=""')
+          fi
 
           sam deploy \
             --no-confirm-changeset \
