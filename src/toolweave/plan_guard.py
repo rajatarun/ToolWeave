@@ -23,11 +23,11 @@ Two checks close it, independent of each other:
    ``TOOLWEAVE_ALLOW_PRIVATE_EGRESS=true`` opts out, for local development
    against a service on localhost.
 
-DNS is resolved once for the check and again by the HTTP client, so a
-rebinding resolver can still answer differently the second time. Closing that
-needs connecting to the checked address, which the HTTP client does not offer;
-the check still removes the direct path, which is the one an agent can be
-talked into.
+DNS is resolved once, for the check, and the executor connects to the
+address the check approved (``resolve_egress``): the URL's host is replaced
+by that address, ``Host`` keeps the name, and for https the TLS SNI and
+certificate check use the name too. A rebinding resolver that answers
+public to the check and private to a second lookup gets no second lookup.
 """
 
 from __future__ import annotations
@@ -164,10 +164,17 @@ def _private(address: str) -> bool:
     return not ip.is_global or ip.is_multicast
 
 
-def check_egress(url: str, *, resolver: Any = socket.getaddrinfo) -> None:
-    """Raise ``EgressDenied`` unless ``url`` resolves only to public addresses."""
+def resolve_egress(url: str, *, resolver: Any = socket.getaddrinfo) -> str | None:
+    """The public address to connect to for ``url``, or ``EgressDenied``.
+
+    Returns the address the check approved, so the executor can connect to
+    exactly that address rather than let the HTTP client resolve the name a
+    second time (a rebinding resolver answers public to the check and private
+    to the connect). None when there is nothing to pin: the private-egress
+    override is on.
+    """
     if (os.environ.get(ENV_ALLOW_PRIVATE_EGRESS) or "").strip().lower() == "true":
-        return
+        return None
     parts = urlsplit(url)
     if parts.scheme not in ("https", "http"):
         raise EgressDenied("only http(s) destinations")
@@ -185,11 +192,18 @@ def check_egress(url: str, *, resolver: Any = socket.getaddrinfo) -> None:
     if literal is not None:
         if _private(host):
             raise EgressDenied("non-public address")
-        return
+        return host
     try:
         infos = resolver(host, parts.port or (443 if parts.scheme == "https" else 80))
     except OSError as exc:
         raise EgressDenied("host does not resolve") from exc
-    addresses = {info[4][0] for info in infos}
-    if not addresses or any(_private(a.split("%", 1)[0]) for a in addresses):
+    addresses = {info[4][0].split("%", 1)[0] for info in infos}
+    if not addresses or any(_private(a) for a in addresses):
         raise EgressDenied("host resolves to a non-public address")
+    # Deterministic choice, IPv4 first: Lambda's IPv6 egress is not assumed.
+    return min(addresses, key=lambda a: (":" in a, a))
+
+
+def check_egress(url: str, *, resolver: Any = socket.getaddrinfo) -> None:
+    """Raise ``EgressDenied`` unless ``url`` resolves only to public addresses."""
+    resolve_egress(url, resolver=resolver)
