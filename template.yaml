@@ -8,6 +8,14 @@ Description: >
 # Parameters — all have defaults; no required overrides at deploy time
 # ---------------------------------------------------------------------------
 Parameters:
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: >
+      Address subscribed to the ops alerts topic (error lines in any function
+      log). Empty: the topic and alarm exist, with no email subscription. Set
+      with the repository variable ALERT_EMAIL.
+
   BedrockCostAttribution:
     Type: String
     Default: 'on'
@@ -159,6 +167,9 @@ Globals:
 # ---------------------------------------------------------------------------
 # Resources
 # ---------------------------------------------------------------------------
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
+
 Resources:
   # One application inference profile per model this stack's calls can resolve
   # to. A call through it is billed with its tags, so model spend lands under
@@ -226,10 +237,37 @@ Resources:
                 Action: ec2:DescribeSubnets
                 Resource: "*"
 
+  # ---- Log groups ----
+  # The functions had no declared log group, so Lambda created
+  # /aws/lambda/<name> itself with no expiry. Declaring a group under that
+  # name fails the deploy (it already exists), so each function writes to a
+  # declared group through LoggingConfig, kept 14 days, and each feeds the
+  # ErrorLines alarm below.
+  SharedStackLookupLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /toolweave/${AWS::StackName}/shared-stack-lookup
+      RetentionInDays: 14
+
+  ToolWeaveLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /toolweave/${AWS::StackName}/server
+      RetentionInDays: 14
+
+  SwaggerProcessorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /toolweave/${AWS::StackName}/swagger-processor
+      RetentionInDays: 14
+
   SharedStackLookupFunction:
     Type: AWS::Lambda::Function
     Properties:
       Handler: index.handler
+      LoggingConfig:
+        LogGroup: !Ref SharedStackLookupLogGroup
+        LogFormat: Text
       Role: !GetAtt SharedStackLookupRole.Arn
       Runtime: python3.12
       Timeout: 30
@@ -522,6 +560,9 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-server"
       CodeUri: src/
       Handler: toolweave.server.lambda_handler
+      LoggingConfig:
+        LogGroup: !Ref ToolWeaveLogGroup
+        LogFormat: Text
       Role: !GetAtt ToolWeaveLambdaRole.Arn
       Timeout: 120
       MemorySize: 1024
@@ -560,6 +601,9 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-swagger-processor"
       CodeUri: src/
       Handler: toolweave.swagger_processor.lambda_handler
+      LoggingConfig:
+        LogGroup: !Ref SwaggerProcessorLogGroup
+        LogFormat: Text
       Role: !GetAtt ToolWeaveLambdaRole.Arn
       Timeout: 300
       MemorySize: 512
@@ -569,6 +613,77 @@ Resources:
 # ---------------------------------------------------------------------------
 # Outputs
 # ---------------------------------------------------------------------------
+
+  # Ops alerts: error lines in any function log. A handler that catches its
+  # own exceptions and answers 500 leaves Lambda's Errors metric at 0; what it
+  # does leave is an [ERROR] line, so each function's log feeds one
+  # ErrorLines metric and one alarm watches it. SNS notifies on the change to
+  # ALARM.
+  OpsAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub ${AWS::StackName}-ops-alerts
+      KmsMasterKeyId: alias/aws/sns
+
+  OpsAlertsEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref OpsAlertsTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  SharedStackLookupErrorLines:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref SharedStackLookupLogGroup
+      FilterPattern: '?"[ERROR]" ?"Task timed out" ?"Runtime.ExitError"'
+      MetricTransformations:
+        - MetricNamespace: ToolWeave/Ops
+          MetricName: ErrorLines
+          MetricValue: "1"
+          Unit: Count
+
+  ToolWeaveErrorLines:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ToolWeaveLogGroup
+      FilterPattern: '?"[ERROR]" ?"Task timed out" ?"Runtime.ExitError"'
+      MetricTransformations:
+        - MetricNamespace: ToolWeave/Ops
+          MetricName: ErrorLines
+          MetricValue: "1"
+          Unit: Count
+
+  SwaggerProcessorErrorLines:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref SwaggerProcessorLogGroup
+      FilterPattern: '?"[ERROR]" ?"Task timed out" ?"Runtime.ExitError"'
+      MetricTransformations:
+        - MetricNamespace: ToolWeave/Ops
+          MetricName: ErrorLines
+          MetricValue: "1"
+          Unit: Count
+
+  ErrorLinesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-error-lines
+      AlarmDescription: >
+        A function in this stack logged an [ERROR], timed out or crashed in the
+        last 5 minutes. Find it with Logs Insights over the stack's log groups:
+        filter @message like /\[ERROR\]|Task timed out/.
+      Namespace: ToolWeave/Ops
+      MetricName: ErrorLines
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref OpsAlertsTopic]
+
 Outputs:
   ToolWeaveApiEndpoint:
     Description: API Gateway endpoint URL for ToolWeave MCP server
