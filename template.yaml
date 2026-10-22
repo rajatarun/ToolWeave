@@ -107,6 +107,23 @@ Parameters:
       to CipherWeave tokens. With false the secret is never read and can be
       deleted.
 
+  ToolScopeMode:
+    Type: String
+    Default: "enforce"
+    AllowedValues: ["enforce", "audit"]
+    Description: >
+      enforce: each /mcp tool needs its scope (read, execute) in the token.
+      audit: tool-scope failures are logged, not refused, while existing
+      clients are granted scopes. Never relaxes the rule that commit_api_call
+      cannot be made with a delegated token.
+
+  LegacyTokenScopes:
+    Type: String
+    Default: "read execute destructive"
+    Description: >
+      Scopes the legacy static token carries for per-tool authorization.
+      Limited by cipherweave_verify to read, execute and destructive.
+
 # ---------------------------------------------------------------------------
 # Globals
 # ---------------------------------------------------------------------------
@@ -510,6 +527,8 @@ Resources:
           CIPHERWEAVE_JWKS: !Ref CipherWeaveJwks
           CIPHERWEAVE_ISSUER: !Ref CipherWeaveIssuer
           ACCEPT_LEGACY_TOKEN: !Ref AcceptLegacyToken
+          CIPHERWEAVE_SCOPE_MODE: !Ref ToolScopeMode
+          LEGACY_TOKEN_SCOPES: !Ref LegacyTokenScopes
       Tags:
         Project: ToolWeave
       Events:
