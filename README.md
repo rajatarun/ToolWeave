@@ -365,6 +365,10 @@ Pseudo-sequence for a client:
 - Proposals are scored by `mcp-observatory` and can be blocked before execution.
 - Commits require token verification.
 - Proposals are persisted in DynamoDB with TTL for cross-invocation durability.
+- **Per-tool scopes** (`mcp_auth.TOOL_POLICIES`, `cipherweave_verify.ToolAuthorizer`): `pre_tool` and `health` need `read`; `post_tool` and `reload_catalog` need `execute`; `commit_api_call` needs `execute` and **cannot be called with a delegated (RFC 8693) token** — an agent acting for someone can plan and propose, the principal commits. A refusal is `403` with an `insufficient_scope` challenge. `ToolScopeMode=audit` (repository variable `TOOL_SCOPE_MODE`) logs scope failures instead of refusing them while clients are granted scopes; the delegation rule holds in both modes.
+- **The plan is bound to the catalog** (`plan_guard.bind`). `post_tool`'s plan is a tool argument, so before this a caller could name any base URL, path and headers and the Lambda would fetch it from inside the VPC and return the body (SSRF). Now method, base URL and path template must match a cataloged endpoint, path parameters are single segments (encoded traversal refused), query parameters and headers must be declared by the spec, and `Authorization`/`Host`/`Cookie`/forwarding headers are never taken from a plan. The HTTP method — not the plan's `execution_type` — decides whether a call runs now (GET) or becomes a proposal.
+- **Egress is public-only** (`plan_guard.check_egress`, in the executor, for GETs and commits alike): loopback, private, link-local (Lambda runtime API, instance metadata), multicast and reserved addresses are refused, as literals and by DNS; redirects are not followed. `TOOLWEAVE_ALLOW_PRIVATE_EGRESS=true` opts out for local development. A rebinding resolver can still answer differently at connect time; stated, not hidden.
+- **DPoP and discovery.** `Authorization: DPoP <token>` with a `DPoP` proof is accepted for sender-constrained CipherWeave tokens; `GET /.well-known/oauth-protected-resource` serves RFC 9728 metadata, and every `401` points at it.
 
 ---
 

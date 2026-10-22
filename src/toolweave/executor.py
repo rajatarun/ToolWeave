@@ -7,6 +7,7 @@ from urllib.parse import urljoin
 import httpx
 
 from .models import ImmediateExecutionResult
+from .plan_guard import EgressDenied, check_egress
 
 _EXTERNAL_API_AUTH_HEADER = {"Authorization": "Bearer 123"}
 
@@ -52,7 +53,15 @@ async def _request(
 ) -> ImmediateExecutionResult:
     start = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        # Checked here, at the last step, so a GET and a committed write are
+        # held to the same rule whichever path built the URL.
+        check_egress(url)
+    except EgressDenied as exc:
+        return ImmediateExecutionResult(
+            method=method, url=url, status_code=0, error=f"Destination refused: {exc}"
+        )
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             merged_headers = {
                 **_EXTERNAL_API_AUTH_HEADER,
                 **(headers or {}),
