@@ -105,7 +105,7 @@ def _healthy(response) -> bool:
 
 
 def test_cipherweave_token_calls_the_health_tool(issuer, secrets, server):
-    assert _healthy(_health(server, issuer.mint(audience="toolweave")))
+    assert _healthy(_health(server, issuer.mint(audience="toolweave", scopes=("read",))))
     assert secrets.calls == 0  # a valid CipherWeave token never reads the static secret
 
 
@@ -133,7 +133,7 @@ def test_static_token_still_works_by_default(issuer, secrets, server):
 def test_static_token_is_refused_once_the_flag_is_off(issuer, secrets, server, monkeypatch):
     monkeypatch.setenv("ACCEPT_LEGACY_TOKEN", "false")
     assert _health(server, LEGACY)["statusCode"] == 401
-    assert _healthy(_health(server, issuer.mint(audience="toolweave")))
+    assert _healthy(_health(server, issuer.mint(audience="toolweave", scopes=("read",))))
     assert secrets.calls == 0  # with the flag off the static secret is never read
 
 
@@ -175,6 +175,113 @@ def test_deploy_time_jwks_alone_verifies_with_no_network(issuer, secrets, server
     monkeypatch.setenv("CIPHERWEAVE_JWKS", _b64_jwks(issuer))
     monkeypatch.setattr(cw_jwks, "http_fetcher", _offline)
     reset_default_verifier()
-    assert _healthy(_health(server, issuer.mint(audience="toolweave")))
+    assert _healthy(_health(server, issuer.mint(audience="toolweave", scopes=("read",))))
     assert _health(server, issuer.mint(audience="deviceweave"))["statusCode"] == 401
     assert "CIPHERWEAVE_JWKS: !Ref CipherWeaveJwks" in (REPO_ROOT / "template.yaml").read_text()
+
+
+# ---------------------------------------------------------------------------
+# Per-tool scopes, delegation, DPoP and discovery
+# ---------------------------------------------------------------------------
+def _call(server, tool, token, *, scheme="Bearer", dpop=None, arguments=None):
+    headers = {
+        "content-type": "application/json",
+        "accept": "application/json, text/event-stream",
+        "host": "toolweave.test",
+        "authorization": f"{scheme} {token}",
+    }
+    if dpop is not None:
+        headers["dpop"] = dpop
+    body = {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {"name": tool, "arguments": arguments or {}},
+    }
+    return server.lambda_handler(
+        {
+            "version": "2.0",
+            "routeKey": "POST /mcp",
+            "rawPath": "/mcp",
+            "rawQueryString": "",
+            "headers": headers,
+            "requestContext": {
+                "http": {"method": "POST", "path": "/mcp", "protocol": "HTTP/1.1", "sourceIp": "1.1.1.1"},
+                "stage": "$default",
+                "domainName": "toolweave.test",
+            },
+            "body": json.dumps(body),
+            "isBase64Encoded": False,
+        },
+        None,
+    )
+
+
+def test_a_token_without_the_scope_is_403_with_a_challenge(issuer, secrets, server):
+    response = _call(server, "health", issuer.mint(audience="toolweave"))
+    assert response["statusCode"] == 403
+    assert 'error="insufficient_scope"' in response["headers"]["WWW-Authenticate"]
+    assert 'scope="read"' in response["headers"]["WWW-Authenticate"]
+
+
+def test_read_scope_cannot_commit_a_write(issuer, secrets, server):
+    token = issuer.mint(audience="toolweave", scopes=("read",))
+    response = _call(
+        server, "commit_api_call", token, arguments={"proposal_id": "p", "commit_token": "t"}
+    )
+    assert response["statusCode"] == 403
+
+
+def test_delegated_token_cannot_commit_even_with_execute(issuer, secrets, server):
+    token = issuer.mint(
+        audience="toolweave", scopes=("read", "execute"), act={"sub": "contextweave-svc"}
+    )
+    response = _call(
+        server, "commit_api_call", token, arguments={"proposal_id": "p", "commit_token": "t"}
+    )
+    assert response["statusCode"] == 403
+    assert "delegation_not_allowed" in response["body"]
+
+
+def test_undeclared_tool_needs_the_strictest_scope(issuer, secrets, server):
+    token = issuer.mint(audience="toolweave", scopes=("read", "execute"))
+    assert _call(server, "made_up_tool", token)["statusCode"] == 403
+
+
+def test_tool_policies_cover_every_registered_tool(server):
+    import asyncio
+
+    names = {t.name for t in asyncio.run(server.mcp.list_tools())}
+    assert names <= set(mcp_auth.TOOL_POLICIES)
+
+
+def test_dpop_bound_token_needs_its_proof(issuer, secrets, server):
+    from cipherweave_verify import DPoPKey
+
+    key = DPoPKey()
+    token = issuer.mint(audience="toolweave", scopes=("read",), cnf={"jkt": key.jkt})
+    stolen = _call(server, "health", token)
+    assert stolen["statusCode"] == 401
+    assert stolen["headers"]["WWW-Authenticate"].startswith("DPoP ")
+    proof = key.proof("POST", "https://toolweave.test/mcp", access_token=token)
+    assert _healthy(_call(server, "health", token, scheme="DPoP", dpop=proof))
+
+
+def test_protected_resource_metadata_and_401_pointer(issuer, secrets, server):
+    event = {
+        "version": "2.0",
+        "rawPath": "/.well-known/oauth-protected-resource",
+        "headers": {},
+        "requestContext": {"http": {"method": "GET"}, "stage": "$default", "domainName": "toolweave.test"},
+    }
+    response = server.lambda_handler(event, None)
+    assert response["statusCode"] == 200
+    doc = json.loads(response["body"])
+    assert doc["resource"] == "https://toolweave.test/mcp"
+    assert doc["authorization_servers"] == ["https://cipherweave.test/prod"]
+    assert doc["audience"] == "toolweave"
+    unauthorized = _call(server, "health", "not-a-token")
+    assert (
+        'resource_metadata="https://toolweave.test/.well-known/oauth-protected-resource"'
+        in unauthorized["headers"]["WWW-Authenticate"]
+    )
