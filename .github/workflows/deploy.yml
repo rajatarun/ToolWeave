@@ -11,7 +11,26 @@ permissions:
   contents: read
 
 jobs:
+  # Known-vulnerable dependencies block the deploy, like a red test. Every
+  # ignored advisory is listed here with the reason it does not apply.
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pip-audit
+        run: |
+          python -m pip install pip-audit
+          pip-audit -r src/requirements.txt --progress-spinner off
+
   deploy:
+    needs: audit
     name: SAM Build & Deploy
     runs-on: ubuntu-latest
 
