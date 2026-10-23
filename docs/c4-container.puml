@@ -17,7 +17,7 @@ rectangle "AWS Account  |  us-east-1" <<boundary>> {
 
     rectangle "==API Gateway HTTP API\n\n<size:10>[AWS API Gateway v2]</size>\n\n<i>HTTPS entry point\nCORS enabled\nAWS_PROXY integration</i>" <<container>> as apigw
 
-    rectangle "==ToolWeave Lambda\n\n<size:10>[Python 3.12 / FastMCP]</size>\n\n<i>1024 MB / 120 s timeout\nHosts the MCP server\n4 tools: pre_tool, post_tool,\ncommit_api_call, reload_catalog</i>" <<container>> as toolweave_fn
+    rectangle "==ToolWeave Lambda\n\n<size:10>[Python 3.12 / FastMCP]</size>\n\n<i>512 MB / 60 s timeout\nHosts the MCP server\n5 tools: pre_tool, post_tool,\ncommit_api_call, reload_catalog,\nhealth</i>" <<container>> as toolweave_fn
 
     rectangle "==SwaggerProcessor Lambda\n\n<size:10>[Python 3.12]</size>\n\n<i>512 MB / 300 s timeout\nSpec ingestion pipeline\nTriggered by EventBridge</i>" <<container>> as swagger_fn
 
@@ -34,7 +34,7 @@ rectangle "AWS Account  |  us-east-1" <<boundary>> {
 }
 
 ' ── External Systems ─────────────────────────────────────────────────────────
-rectangle "==Amazon Bedrock\n\n<size:10>[External - Claude 3 Haiku]</size>\n\n<i>Converse API for AI\nplanning and per-endpoint\nspec enrichment</i>" <<external_system>> as bedrock
+rectangle "==Amazon Bedrock\n\n<size:10>[External - ModelWeave-pinned model]</size>\n\n<i>Converse API for AI\nplanning and per-endpoint\nspec enrichment</i>" <<external_system>> as bedrock
 
 rectangle "==DataDictionary MCP Lambda\n\n<size:10>[External Lambda URL]</size>\n\n<i>Field-level metadata:\nformat, constraints, examples\nvia JSON-RPC 2.0</i>" <<external_system>> as data_dictionary
 
