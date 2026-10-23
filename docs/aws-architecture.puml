@@ -48,7 +48,7 @@ rectangle "AWS Account  |  us-east-1" <<aws_account>> {
 }
 
 ' ── External Services ────────────────────────────────────────────────────────
-rectangle "==Amazon Bedrock\n(Claude 3 Haiku)\n\n<size:10>[External AWS Managed Service]</size>\n\n<i>Converse API for\nAI planning + enrichment</i>" <<bedrock>> as bedrock
+rectangle "==Amazon Bedrock\n(ModelWeave-pinned model)\n\n<size:10>[External AWS Managed Service]</size>\n\n<i>Converse API for\nAI planning + enrichment</i>" <<bedrock>> as bedrock
 
 rectangle "==DataDictionary Lambda\n\n<size:10>[External Lambda URL]</size>\n\n<i>Shared MCP service\nField metadata lookup\nJSON-RPC 2.0</i>" <<external>> as dd_lambda
 

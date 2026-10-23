@@ -9,7 +9,7 @@ This file provides guidance for Claude (and other AI assistants) working on the 
 ToolWeave is a **FastMCP server** that translates natural-language prompts into REST API calls by:
 
 1. Parsing OpenAPI/Swagger specs into an in-memory endpoint catalog (backed by DynamoDB)
-2. Using an AI agent (Amazon Bedrock / Claude 3 Haiku) to map prompts to specific endpoints and extract required parameters
+2. Using an AI agent (Amazon Bedrock, with the model pinned by ModelWeave) to map prompts to specific endpoints and extract required parameters
 3. Executing read operations immediately and gating write operations behind a proposal/commit flow via `mcp-observatory`
 
 The full architecture is documented in [`architecture.md`](./architecture.md).
@@ -193,8 +193,9 @@ GitHub Actions handles production deploys via OIDC — no manual `sam deploy` is
 # Required for DynamoDB access
 AWS_REGION=us-east-1
 
-# Required for Bedrock
-BEDROCK_MODEL_ID=anthropic.claude-3-haiku-20240307-v1:0
+# Fallback planner model, used only when ModelWeave's reasoning pin cannot be read
+# (a local run without SSM access). Pick a model ModelWeave lists as not retired.
+BEDROCK_MODEL_ID=<model id>
 
 # Required for proposal gating (use a strong secret in production)
 OBSERVATORY_SECRET_KEY=your-secret-here

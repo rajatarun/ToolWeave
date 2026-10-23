@@ -19,7 +19,7 @@ rectangle "==ToolWeave\n\n<size:10>[Software System]</size>\n\n<i>FastMCP server
 ' ── External Systems ─────────────────────────────────────────────────────────
 rectangle "==Target REST APIs\n\n<size:10>[External Software System]</size>\n\n<i>Customer / partner REST\nservices that ToolWeave\nexecutes on behalf\nof the caller</i>" <<external_system>> as target_api
 
-rectangle "==Amazon Bedrock\n\n<size:10>[External Software System]</size>\n\n<i>Claude 3 Haiku via\nConverse API for AI\nplanning and endpoint\nenrichment</i>" <<external_system>> as bedrock
+rectangle "==Amazon Bedrock\n\n<size:10>[External Software System]</size>\n\n<i>ModelWeave-pinned model via\nConverse API for AI\nplanning and endpoint\nenrichment</i>" <<external_system>> as bedrock
 
 rectangle "==DataDictionary MCP\n\n<size:10>[External Software System]</size>\n\n<i>Shared Lambda service\nthat provides field-level\nmetadata (format, constraints)</i>" <<external_system>> as data_dictionary
 
