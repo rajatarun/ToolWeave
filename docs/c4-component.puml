@@ -35,7 +35,7 @@ rectangle "ToolWeave Lambda  |  Python 3.12 / FastMCP" <<boundary>> {
 }
 
 ' ── External Dependencies ─────────────────────────────────────────────────────
-rectangle "==Amazon Bedrock\n\n<size:10>[Claude 3 Haiku / Converse API]</size>\n\n<i>Processes agent tool-use\nloop and returns structured\nfinalize_plan responses</i>" <<external_system>> as bedrock_ext
+rectangle "==Amazon Bedrock\n\n<size:10>[ModelWeave-pinned model / Converse API]</size>\n\n<i>Processes agent tool-use\nloop and returns structured\nfinalize_plan responses</i>" <<external_system>> as bedrock_ext
 
 rectangle "==DataDictionary Lambda\n\n<size:10>[FastMCP / HTTP]</size>\n\n<i>Returns field-level metadata\nvia JSON-RPC</i>" <<external_system>> as dd_lambda
 
@@ -58,7 +58,7 @@ dd_client --> dd_lambda : "JSON-RPC:\nget_data_element\nsearch_data_elements"
 agent --> bedrock_ext : "Converse API\ntool-use loop\n[AWS SDK]"
 
 ' ── post_tool + commit flow ───────────────────────────────────────────────
-server --> executor : "post_tool (GET):\nimmmediate HTTP call"
+server --> executor : "post_tool (GET):\nimmediate HTTP call"
 server --> observatory : "post_tool (write):\npropose() risk score\n+ HMAC token"
 observatory --> proposals_db : "save_proposal\n[DynamoDB TTL]"
 executor --> target_api_ext : "HTTP GET / write\n[httpx / HTTPS]"
