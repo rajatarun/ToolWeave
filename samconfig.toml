@@ -7,4 +7,6 @@ capabilities      = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
 resolve_s3        = true
 confirm_changeset = false
 fail_on_empty_changeset = false
-parameter_overrides = "McpAuthTokenSecretName=toolweave/mcp-auth-token"
+# For local deploy, set SharedStackName and DataDictionaryUrl to your account values.
+# See docs/DEPLOY_CONFIG.md.
+parameter_overrides = "McpAuthTokenSecretName=toolweave/mcp-auth-token SharedStackName=example-shared-stack DataDictionaryUrl=https://example.lambda-url.us-east-1.on.aws/"

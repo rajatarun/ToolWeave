@@ -10,7 +10,7 @@ from .models import DataElementMeta
 
 DATA_DICTIONARY_URL = os.environ.get(
     "DATA_DICTIONARY_URL",
-    "https://ft5yitoykshqz73sejd7miatze0syqds.lambda-url.us-east-1.on.aws/",
+    "https://example.lambda-url.us-east-1.on.aws/",
 )
 
 # MCP endpoint — the DataDictionary Lambda uses stateless_http=True so every
