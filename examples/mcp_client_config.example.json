@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "toolweave": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://YOUR-API-GATEWAY-HOST/mcp",
+        "--header",
+        "Authorization:${TOOLWEAVE_AUTHORIZATION}"
+      ],
+      "env": {
+        "TOOLWEAVE_AUTHORIZATION": "Bearer YOUR_TOKEN_HERE"
+      }
+    }
+  }
+}
