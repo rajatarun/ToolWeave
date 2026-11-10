@@ -27,8 +27,11 @@ Parameters:
 
   SharedStackName:
     Type: String
-    Default: tarun-teamweave-shared
-    Description: Name of the shared infrastructure CloudFormation stack to import VPC, subnet, and observatory table values from
+    Default: example-shared-stack
+    Description: >
+      Name of the shared infrastructure CloudFormation stack to import VPC,
+      subnet, and observatory table values from. Override via the repository
+      variable SHARED_STACK_NAME (GitHub Actions) or --parameter-overrides locally.
 
   ObservatorySecretKey:
     Type: String
@@ -60,8 +63,10 @@ Parameters:
 
   DataDictionaryUrl:
     Type: String
-    Default: "https://ft5yitoykshqz73sejd7miatze0syqds.lambda-url.us-east-1.on.aws/"
-    Description: DataDictionary MCP Lambda Function URL
+    Default: "https://example.lambda-url.us-east-1.on.aws/"
+    Description: >
+      DataDictionary MCP Lambda Function URL. Override via the repository
+      variable DATA_DICTIONARY_URL (GitHub Actions) or --parameter-overrides locally.
 
   # The secret value is created out of band and is not a template parameter.
   # MinLength plus AllowedPattern reject a blank override. An empty name is

@@ -19,7 +19,7 @@ rectangle "AWS Account  |  us-east-1" <<aws_account>> {
     rectangle "==ToolWeave HTTP API\n\n<size:10>[API Gateway v2]</size>\n\n<i>HTTPS entry point\nCORS enabled\nAWS_PROXY integration</i>" <<apigw>> as apigw
 
     ' ── VPC ──────────────────────────────────────────────────────────────────
-    rectangle "VPC  (tarun-teamweave-shared)" <<vpc>> {
+    rectangle "VPC  (example-shared-stack)" <<vpc>> {
 
         rectangle "==ToolWeaveFunction\n\n<size:10>[AWS Lambda]</size>\n\n<i>Python 3.12 / FastMCP\n1024 MB / 120 s timeout\nMCP Server + 4 tools</i>" <<lambda>> as toolweave_fn
 
@@ -39,7 +39,7 @@ rectangle "AWS Account  |  us-east-1" <<aws_account>> {
 
     database "==Proposals\n\n<size:10>[Amazon DynamoDB]</size>\n\n<i>PK: proposal_id  TTL: 3600 s\nWrite proposal persistence\nacross Lambda invocations</i>" <<dynamodb>> as proposals_table
 
-    rectangle "Shared Stack  (tarun-teamweave-shared)" <<aws_region>> {
+    rectangle "Shared Stack  (example-shared-stack)" <<aws_region>> {
         database "==Observatory Metrics\n\n<size:10>[Amazon DynamoDB - Shared]</size>\n\n<i>PK: INVOCATION#{tool_name}\nSK: timestamp\nDuration, status, errors</i>" <<dynamodb>> as metrics_table
     }
 

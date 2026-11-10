@@ -28,8 +28,9 @@ sam build
 sam deploy
 ```
 
-Configure stack parameters per your account. See `template.yaml` and
-`samconfig.toml` for defaults. Create the MCP auth secret before relying on
+Configure stack parameters per your account. See `template.yaml`,
+`samconfig.toml`, and [`DEPLOY_CONFIG.md`](./DEPLOY_CONFIG.md) for GitHub
+secrets/variables and local overrides. Create the MCP auth secret before relying on
 `/mcp`:
 
 ```bash
