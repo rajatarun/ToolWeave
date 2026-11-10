@@ -8,7 +8,7 @@ forks the interface the shared table depends on.
 
 | File | Purpose |
 |------|---------|
-| `observatory_metrics_item.json` | Item contract (v1.0.0) for the shared `OBSERVATORY_METRICS` DynamoDB table provisioned by the `tarun-teamweave-shared` stack. |
+| `observatory_metrics_item.json` | Item contract (v1.0.0) for the shared `OBSERVATORY_METRICS` DynamoDB table provisioned by the shared infrastructure stack (`SHARED_STACK_NAME`). |
 | `conformance.py` | Dependency-free checker (`load_contract`, `check_item`, `readers_for`) run by `tests/test_shared_table_contract.py`. |
 
 ## Why it is vendored rather than imported

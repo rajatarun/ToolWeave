@@ -1,7 +1,7 @@
 """Conformance of ToolWeave's OBSERVATORY_METRICS writers to the shared contract.
 
 The shared ``OBSERVATORY_METRICS`` table (provisioned by the
-``tarun-teamweave-shared`` stack) is written by several services and read by
+shared infrastructure stack) is written by several services and read by
 several dashboards, none of which can see each other's code. The item shape is
 therefore a cross-repository interface, pinned in ``contracts/`` — a verbatim
 copy of the canonical files in ``rajatarun/mcp-observatory``.

@@ -12,8 +12,7 @@
 ## Project identity
 
 **Name**: ToolWeave — turns natural-language requests into safe REST API calls from OpenAPI specs
-**Owner**: Tarun Raja (rajatarun)
-**Account**: AWS `239571291755`, `us-east-1`, SAM via GitHub Actions OIDC
+**Account**: AWS account and region are configured per environment (see `docs/DEPLOY_CONFIG.md`); SAM deploys via GitHub Actions OIDC.
 
 There are five MCP tools: `pre_tool` (plan), `post_tool` (execute a GET or
 propose a write), `commit_api_call`, `reload_catalog` and `health`. Writes go

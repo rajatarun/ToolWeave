@@ -23,7 +23,7 @@ from mcp_observatory.instrument import instrument_wrapper_api
 # ---------------------------------------------------------------------------
 
 OBSERVATORY_METRICS_TABLE = os.environ.get(
-    "OBSERVATORY_METRICS_TABLE", "tarun-teamweave-shared-OBSERVATORY_METRICS"
+    "OBSERVATORY_METRICS_TABLE", "example-shared-OBSERVATORY_METRICS"
 )
 
 # ---------------------------------------------------------------------------
@@ -45,7 +45,7 @@ _proposer, _verifier, _token_manager = build_gate(
 )
 
 # ---------------------------------------------------------------------------
-# Shared observability metrics — DynamoDB (tarun-teamweave-shared)
+# Shared observability metrics — DynamoDB (shared infrastructure stack)
 # Table name resolved at deploy time from the shared CloudFormation stack
 # output "ObservatoryMetricsTableName" via SharedStackLookup custom resource.
 # ---------------------------------------------------------------------------
@@ -110,7 +110,7 @@ def _wrapper_operation(method: str | None) -> str:
 class DynamoDBSpanExporter(Exporter):
     """Exports InvocationWrapperAPI span telemetry to the shared OBSERVATORY_METRICS table.
 
-    The table is provisioned in the shared CloudFormation stack (tarun-teamweave-shared)
+    The table is provisioned in the shared CloudFormation stack (SHARED_STACK_NAME)
     and its name is injected at deploy time via the OBSERVATORY_METRICS_TABLE env var,
     resolved by the SharedStackLookup custom resource from the stack output
     "ObservatoryMetricsTableName".

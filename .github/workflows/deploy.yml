@@ -94,8 +94,8 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          role-to-assume: arn:aws:iam::239571291755:role/teamweave-github-actions-sam-deployer
-          aws-region: us-east-1
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
 
       - name: Set up AWS SAM CLI
         uses: aws-actions/setup-sam@341eee193f458fa5aae5d52c94b0c5cf3a1c5a52 # v3
@@ -128,13 +128,14 @@ jobs:
       - name: Resolve CipherWeave token issuer
         id: cipherweave
         env:
+          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
           ACCEPT_LEGACY_TOKEN: ${{ vars.ACCEPT_LEGACY_TOKEN || 'true' }}
           CIPHERWEAVE_STACK_NAME: ${{ vars.CIPHERWEAVE_STACK_NAME || 'cipherweave-prod' }}
         run: |
           get() {
             aws cloudformation describe-stacks \
               --stack-name "$CIPHERWEAVE_STACK_NAME" \
-              --region us-east-1 \
+              --region "$AWS_REGION" \
               --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" \
               --output text 2>/dev/null || echo ""
           }
@@ -185,8 +186,12 @@ jobs:
       # ------------------------------------------------------------------
       - name: SAM Deploy
         env:
+          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
           OBSERVATORY_SECRET_KEY: ${{ secrets.OBSERVATORY_SECRET_KEY }}
           MCP_AUTH_TOKEN_SECRET_NAME: ${{ vars.MCP_AUTH_TOKEN_SECRET_NAME || 'toolweave/mcp-auth-token' }}
+          SHARED_STACK_NAME: ${{ vars.SHARED_STACK_NAME }}
+          DATA_DICTIONARY_URL: ${{ vars.DATA_DICTIONARY_URL }}
+          STACK_NAME: ${{ vars.STACK_NAME || 'toolweave' }}
           JWKS_URL: ${{ steps.cipherweave.outputs.jwks_url }}
           ISSUER_ID: ${{ steps.cipherweave.outputs.issuer_id }}
           JWKS_B64: ${{ steps.cipherweave.outputs.jwks_b64 }}
@@ -215,6 +220,16 @@ jobs:
           # needs the ParameterKey=,ParameterValue="" form, and a string that
           # mixes the two forms silently keeps only the ParameterKey entries.
           PARAM_OVERRIDES=("McpAuthTokenSecretName=${SECRET_NAME}")
+          if [ -z "$SHARED_STACK_NAME" ]; then
+            echo "::error::Repository variable SHARED_STACK_NAME is not set. Refusing to deploy."
+            exit 1
+          fi
+          PARAM_OVERRIDES+=("SharedStackName=${SHARED_STACK_NAME}")
+          if [ -z "$DATA_DICTIONARY_URL" ]; then
+            echo "::error::Repository variable DATA_DICTIONARY_URL is not set. Refusing to deploy."
+            exit 1
+          fi
+          PARAM_OVERRIDES+=("DataDictionaryUrl=${DATA_DICTIONARY_URL}")
           if [ -n "$OBSERVATORY_SECRET_KEY" ]; then
             PARAM_OVERRIDES+=("ObservatorySecretKey=\"${OBSERVATORY_SECRET_KEY}\"")
           fi
@@ -242,6 +257,8 @@ jobs:
           sam deploy \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
+            --stack-name "${STACK_NAME}" \
+            --region "${AWS_REGION}" \
             --parameter-overrides "${PARAM_OVERRIDES[@]}" \
             --tags repo=ToolWeave
           # repo=<RepoName> on the stack is copied onto every resource it
@@ -262,30 +279,37 @@ jobs:
       # ------------------------------------------------------------------
       - name: Publish API specs
         continue-on-error: true
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+          STACK_NAME: ${{ vars.STACK_NAME || 'toolweave' }}
         run: |
           # Read the bucket from the stack that was just deployed. No
           # fallback: a guessed bucket name is the hardcoding this stack
           # publishes an output to avoid, and a guess that is wrong uploads
           # specs where nothing reads them while reporting success.
           BUCKET=$(aws cloudformation describe-stacks \
-            --stack-name toolweave \
-            --region us-east-1 \
+            --stack-name "${STACK_NAME}" \
+            --region "${AWS_REGION}" \
             --query "Stacks[0].Outputs[?OutputKey=='ApiSpecsBucketName'].OutputValue" \
             --output text 2>/dev/null || true)
           if [ -z "${BUCKET}" ] || [ "${BUCKET}" = "None" ]; then
-            echo "::error::toolweave stack published no ApiSpecsBucketName output; cannot publish specs."
+            echo "::error::${STACK_NAME} stack published no ApiSpecsBucketName output; cannot publish specs."
             exit 1
           fi
           echo "Publishing specs to s3://${BUCKET}"
-          python scripts/publish_specs.py --bucket "${BUCKET}" --region us-east-1
+          python scripts/publish_specs.py --bucket "${BUCKET}" --region "${AWS_REGION}"
 
       # ------------------------------------------------------------------
       # Print Function URL for easy reference
       # ------------------------------------------------------------------
       - name: Print ToolWeave API endpoint
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+          STACK_NAME: ${{ vars.STACK_NAME || 'toolweave' }}
         run: |
           URL=$(aws cloudformation describe-stacks \
-            --stack-name toolweave \
+            --stack-name "${STACK_NAME}" \
+            --region "${AWS_REGION}" \
             --query "Stacks[0].Outputs[?OutputKey=='ToolWeaveApiEndpoint'].OutputValue" \
             --output text)
           echo "ToolWeave MCP endpoint: ${URL}/mcp"
