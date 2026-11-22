@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from typing import Any
 
@@ -10,7 +11,10 @@ import yaml
 
 from .models import EndpointEntry, EndpointParameter, RequestBodyField
 
-_EXTERNAL_API_AUTH_HEADER = {"Authorization": "Bearer 123"}
+
+def _spec_fetch_headers() -> dict[str, str]:
+    token = os.environ.get("TOOLWEAVE_SPEC_AUTH_TOKEN", "").strip()
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 # ---------------------------------------------------------------------------
 # Public helpers
@@ -27,7 +31,7 @@ def load_spec_from_bytes(content: bytes, filename: str = "") -> dict[str, Any]:
 
 async def load_spec_from_url(url: str) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(url, headers=_EXTERNAL_API_AUTH_HEADER)
+        resp = await client.get(url, headers=_spec_fetch_headers())
         resp.raise_for_status()
         return load_spec_from_bytes(resp.content, url)
 

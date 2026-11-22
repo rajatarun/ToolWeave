@@ -248,10 +248,15 @@ async def commit_api_call(proposal_id: str, commit_token: str) -> dict[str, Any]
 
         verification = await observatory.verify(proposal_id, commit_token, tool_name, tool_args)
         if not verification.ok:
+            reason = (
+                getattr(verification, "reason", None)
+                or getattr(verification, "failure_reason", None)
+                or "Verification failed."
+            )
             return CommitResult(
                 status="blocked",
                 proposal_id=proposal_id,
-                reason=getattr(verification, "failure_reason", "Verification failed."),
+                reason=reason,
             ).model_dump()
 
         method: str = tool_args.get("method", "POST")

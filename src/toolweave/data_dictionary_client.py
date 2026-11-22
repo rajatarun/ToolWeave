@@ -16,7 +16,11 @@ DATA_DICTIONARY_URL = os.environ.get(
 # MCP endpoint — the DataDictionary Lambda uses stateless_http=True so every
 # POST to /mcp is a self-contained request/response session.
 _MCP_ENDPOINT = DATA_DICTIONARY_URL.rstrip("/") + "/mcp"
-_EXTERNAL_API_AUTH_HEADER = {"Authorization": "Bearer 123"}
+
+
+def _auth_headers() -> dict[str, str]:
+    token = os.environ.get("DATA_DICTIONARY_AUTH_TOKEN", "").strip()
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 # MCP 2026-07-28 is stateless: version and capabilities ride on every request,
 # mirrored in headers. A server older than that refuses it with a 400 that
@@ -33,7 +37,7 @@ def _request(tool_name: str, arguments: dict[str, Any], *, modern: bool) -> tupl
         "Content-Type": "application/json",
         # Some MCP servers are strict about Accept negotiation for JSON-RPC.
         "Accept": "application/json, text/event-stream",
-        **_EXTERNAL_API_AUTH_HEADER,
+        **_auth_headers(),
     }
     if modern:
         params["_meta"] = {
