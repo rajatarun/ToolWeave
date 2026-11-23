@@ -22,6 +22,7 @@ GET /.well-known/oauth-protected-resource serves RFC 9728 metadata.
 import argparse
 import asyncio
 import base64
+import json
 import logging
 import os
 import uuid
@@ -40,13 +41,14 @@ from . import (
     observatory,
     plan_guard,
 )
-from .local_catalog import SQLiteCatalogStore
+from .local_catalog import LanAllowlistGuard, SQLiteCatalogStore
 from .models import (
     CommitResult,
     ImmediateExecutionResult,
     PreToolResponse,
     ProposalResult,
 )
+from .pipeline import ToolPipeline
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -633,6 +635,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=os.environ.get("TOOLWEAVE_SOCKET_PATH", "/tmp/toolweave.sock"),
         help="Unix Domain Socket path when --transport=uds.",
     )
+    parser.add_argument(
+        "--dry-run-pipeline",
+        default=None,
+        help="Validate a multi-step pipeline JSON file against the local catalog without making HTTP calls.",
+    )
+    parser.add_argument(
+        "--allow-host",
+        action="append",
+        default=[],
+        help="Allowlisted host for --dry-run-pipeline (may be repeated).",
+    )
     return parser
 
 
@@ -641,6 +654,35 @@ def main(argv: list[str] | None = None) -> int:
 
     args = build_arg_parser().parse_args(argv)
     _dd_context = os.environ.get("DATA_DICTIONARY_CONTEXT", "API")
+
+    if args.dry_run_pipeline:
+        db_path = args.db or ":memory:"
+        configure_local_catalog(db_path=db_path, specs_dir=args.specs_dir)
+        assert _local_store is not None
+        raw_plan = json.loads(Path(args.dry_run_pipeline).read_text(encoding="utf-8"))
+        if isinstance(raw_plan, list):
+            raw_steps = raw_plan
+            file_hosts: list[str] = []
+        elif isinstance(raw_plan, dict) and isinstance(raw_plan.get("steps"), list):
+            raw_steps = raw_plan["steps"]
+            file_hosts = [str(h) for h in (raw_plan.get("allowed_hosts") or [])]
+        else:
+            print(
+                json.dumps(
+                    {
+                        "status": "error",
+                        "error": "pipeline JSON must be a list of steps or an object with 'steps'",
+                    }
+                )
+            )
+            return 1
+
+        allowed_hosts = [*file_hosts, *(args.allow_host or [])]
+        allowlist = LanAllowlistGuard(allowed_hosts) if allowed_hosts else None
+        pipeline = ToolPipeline(_local_store, allowlist=allowlist)
+        result = pipeline.execute(raw_steps, dry_run=True)
+        print(json.dumps(result.to_dict(), indent=2))
+        return 0 if result.status in ("dry_run", "completed") else 1
 
     if args.specs_dir or args.db:
         db_path = args.db or "toolweave_catalog.db"

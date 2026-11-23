@@ -126,3 +126,7 @@ class LanAllowlistGuard:
         if ip.is_link_local or ip.is_loopback or ip.is_multicast:
             return False, f"forbidden_ip:{host}"
         return False, f"ip_not_allowlisted:{host}"
+
+    def check_url(self, url: str) -> tuple[bool, str]:
+        """Validate ``url`` against the explicit LAN host allowlist."""
+        return self.is_allowed(url)
