@@ -19,28 +19,50 @@ the executor refuses non-public destinations (``plan_guard``).
 GET /.well-known/oauth-protected-resource serves RFC 9728 metadata.
 """
 
-import contextlib
-import json
+import argparse
+import asyncio
+import base64
 import logging
 import os
 import uuid
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any
 
 from fastmcp import FastMCP
-from mangum import Mangum
+from pydantic import ValidationError
 
-from . import agent, dynamodb_client, executor, mcp_auth, observatory, plan_guard
-from .models import CommitResult, ImmediateExecutionResult, PreToolResponse, ProposalResult
+from . import (
+    agent,
+    catalog_search,
+    dynamodb_client,
+    executor,
+    mcp_auth,
+    observatory,
+    plan_guard,
+)
+from .local_catalog import SQLiteCatalogStore
+from .models import (
+    CommitResult,
+    ImmediateExecutionResult,
+    PreToolResponse,
+    ProposalResult,
+)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+# Lazy-imported inside lambda_handler so toolweave.server works without [aws]/mangum.
+# Kept as a module attribute so tests can monkeypatch ``server.Mangum``.
+Mangum: Any = None
+
 # ---------------------------------------------------------------------------
-# Module-level state — populated at cold start
+# Module-level state — populated at cold start or via local CLI
 # ---------------------------------------------------------------------------
 
-_catalog: list = []  # list[EndpointEntry], populated by lifespan
+_catalog: list = []  # list[EndpointEntry], populated by lifespan or local SQLite
 _dd_context: str = ""
+_local_store: SQLiteCatalogStore | None = None
+_local_specs_dir: Path | None = None
 
 # ---------------------------------------------------------------------------
 # FastMCP server
@@ -72,7 +94,7 @@ mcp = FastMCP(
 )
 async def pre_tool(
     prompt: str,
-    session_id: Optional[str] = None,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Identify the right API endpoint and extract field values from the prompt.
 
@@ -144,7 +166,7 @@ async def post_tool(api_call_plan: dict[str, Any]) -> dict[str, Any]:
     ):
         try:
             plan = PreToolResponse.model_validate(api_call_plan)
-        except Exception as exc:
+        except ValidationError as exc:
             return {"error": f"Invalid api_call_plan: {exc}"}
 
         if plan.status != "ready":
@@ -316,27 +338,58 @@ async def health() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Tool 4 — reload_catalog
+# Tool 4 — search_catalog (offline/local & cloud endpoint search)
 # ---------------------------------------------------------------------------
 
 
 @mcp.tool(
     description=(
-        "Reload the API endpoint catalog from DynamoDB. "
-        "Call this after uploading new Swagger files to the S3 bucket and allowing "
-        "the SwaggerProcessorFunction time to process them."
+        "Search the loaded OpenAPI endpoint catalog by keyword without calling Bedrock. "
+        "Works offline with local --specs-dir / SQLite catalogs as well as DynamoDB catalogs."
+    ),
+    annotations={"readOnlyHint": True, "destructiveHint": False},
+)
+async def search_catalog(query: str, top_k: int = 10) -> dict[str, Any]:
+    """Search loaded OpenAPI endpoints by keyword."""
+    entries = _local_store.load_all() if _local_store is not None else _catalog
+    hits = catalog_search.search(query, entries, top_k=top_k)
+    return {
+        "status": "ok",
+        "query": query,
+        "count": len(hits),
+        "endpoints": [
+            h if isinstance(h, dict) else h.model_dump()
+            for h in hits
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tool 5 — reload_catalog
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(
+    description=(
+        "Reload the API endpoint catalog from the local SQLite/specs store (when configured) "
+        "or from DynamoDB."
     )
 )
 async def reload_catalog() -> dict[str, Any]:
-    """Refresh the in-memory endpoint catalog from DynamoDB.
+    """Refresh the in-memory endpoint catalog from SQLite or DynamoDB.
 
     Returns:
         Status, endpoint count, and number of distinct APIs loaded.
     """
-    global _catalog, _dd_context
+    global _catalog
 
     async with observatory.track_invocation("reload_catalog", {}):
-        _catalog = dynamodb_client.load_full_catalog()
+        if _local_store is not None:
+            if _local_specs_dir is not None:
+                _local_store.ingest_directory(_local_specs_dir)
+            _catalog = _local_store.load_all()
+        else:
+            _catalog = dynamodb_client.load_full_catalog()
         api_ids = {e.api_id for e in _catalog}
         logger.info(
             "Catalog reloaded: %d endpoints across %d APIs", len(_catalog), len(api_ids)
@@ -346,6 +399,159 @@ async def reload_catalog() -> dict[str, Any]:
             "endpoint_count": len(_catalog),
             "api_count": len(api_ids),
         }
+
+
+# ---------------------------------------------------------------------------
+# Local SQLite catalog configuration helper
+# ---------------------------------------------------------------------------
+
+
+def configure_local_catalog(
+    db_path: str | Path,
+    specs_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Initialize local SQLite catalog, optionally ingesting OpenAPI specs from ``specs_dir``."""
+    global _catalog, _local_store, _local_specs_dir
+
+    if _local_store is not None:
+        _local_store.close()
+    _local_store = SQLiteCatalogStore(db_path)
+    _local_specs_dir = Path(specs_dir) if specs_dir is not None else None
+    ingested: dict[str, int] = {}
+    if _local_specs_dir is not None:
+        ingested = _local_store.ingest_directory(_local_specs_dir)
+    _catalog = _local_store.load_all()
+    return {
+        "db_path": str(db_path),
+        "specs_dir": str(_local_specs_dir) if _local_specs_dir is not None else None,
+        "ingested": ingested,
+        "endpoint_count": len(_catalog),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Pure-Python ASGI HTTP API v2 fallback when Mangum is not installed
+# ---------------------------------------------------------------------------
+
+
+def _invoke_asgi_apigw_v2(app: Any, event: dict[str, Any]) -> dict[str, Any]:
+    """Invoke an ASGI3 app directly for an API Gateway HTTP API v2 event."""
+
+    async def _run() -> dict[str, Any]:
+        # Run ASGI lifespan startup/shutdown cleanly around the request
+        startup_complete = asyncio.Event()
+        shutdown_trigger = asyncio.Event()
+        shutdown_complete = asyncio.Event()
+        lifespan_failed = False
+
+        async def lifespan_receive() -> dict[str, Any]:
+            if not startup_complete.is_set():
+                return {"type": "lifespan.startup"}
+            await shutdown_trigger.wait()
+            return {"type": "lifespan.shutdown"}
+
+        async def lifespan_send(message: dict[str, Any]) -> None:
+            nonlocal lifespan_failed
+            msg_type = message.get("type")
+            if msg_type == "lifespan.startup.complete":
+                startup_complete.set()
+            elif msg_type == "lifespan.startup.failed":
+                lifespan_failed = True
+                startup_complete.set()
+            elif msg_type in ("lifespan.shutdown.complete", "lifespan.shutdown.failed"):
+                shutdown_complete.set()
+
+        lifespan_task = asyncio.create_task(
+            app({"type": "lifespan", "asgi": {"version": "3.0"}}, lifespan_receive, lifespan_send)
+        )
+        await startup_complete.wait()
+
+        try:
+            http_ctx = (event.get("requestContext") or {}).get("http") or {}
+            method = (http_ctx.get("method") or event.get("httpMethod") or "GET").upper()
+            raw_path = event.get("rawPath") or http_ctx.get("path") or event.get("path") or "/"
+            raw_qs = event.get("rawQueryString") or ""
+            raw_headers = event.get("headers") or {}
+            asgi_headers = [
+                (k.lower().encode("latin-1"), str(v).encode("latin-1"))
+                for k, v in raw_headers.items()
+                if v is not None
+            ]
+            raw_body = event.get("body") or ""
+            if event.get("isBase64Encoded"):
+                body_bytes = base64.b64decode(raw_body)
+            elif isinstance(raw_body, bytes):
+                body_bytes = raw_body
+            else:
+                body_bytes = str(raw_body).encode("utf-8")
+
+            domain = (event.get("requestContext") or {}).get("domainName") or "localhost"
+            scope = {
+                "type": "http",
+                "asgi": {"version": "3.0", "spec_version": "2.3"},
+                "http_version": "1.1",
+                "method": method,
+                "scheme": "https",
+                "path": raw_path,
+                "raw_path": raw_path.encode("utf-8"),
+                "query_string": raw_qs.encode("latin-1"),
+                "root_path": "",
+                "headers": asgi_headers,
+                "server": (domain, 443),
+                "client": (http_ctx.get("sourceIp") or "127.0.0.1", 0),
+            }
+
+            body_sent = False
+            response_complete = asyncio.Event()
+
+            async def http_receive() -> dict[str, Any]:
+                nonlocal body_sent
+                if not body_sent:
+                    body_sent = True
+                    return {"type": "http.request", "body": body_bytes, "more_body": False}
+                await response_complete.wait()
+                return {"type": "http.disconnect"}
+
+            status_code = 500
+            resp_headers: dict[str, str] = {}
+            chunks: list[bytes] = []
+
+            async def http_send(message: dict[str, Any]) -> None:
+                nonlocal status_code
+                if message["type"] == "http.response.start":
+                    status_code = int(message["status"])
+                    for k, v in message.get("headers") or []:
+                        resp_headers[k.decode("latin-1").lower()] = v.decode("latin-1")
+                elif message["type"] == "http.response.body":
+                    chunk = message.get("body") or b""
+                    if chunk:
+                        chunks.append(chunk)
+                    if not message.get("more_body", False):
+                        response_complete.set()
+
+            await app(scope, http_receive, http_send)
+            response_complete.set()
+            return {
+                "statusCode": status_code,
+                "headers": resp_headers,
+                "body": b"".join(chunks).decode("utf-8", errors="replace"),
+                "isBase64Encoded": False,
+            }
+        finally:
+            if not lifespan_failed:
+                shutdown_trigger.set()
+                try:
+                    await asyncio.wait_for(shutdown_complete.wait(), timeout=2.0)
+                except TimeoutError:
+                    logger.debug("ASGI lifespan shutdown timed out")
+            if not lifespan_task.done():
+                lifespan_task.cancel()
+                try:
+                    await lifespan_task
+                except asyncio.CancelledError:
+                    logger.debug("ASGI lifespan task cancelled")
+
+    return asyncio.run(_run())
 
 
 # ---------------------------------------------------------------------------
@@ -370,19 +576,96 @@ def lambda_handler(event: dict[str, Any], context: Any) -> Any:
     # reuse the module-level _catalog list unless reload_catalog is called.
     global _catalog, _dd_context
     if not _catalog:
-        _catalog = dynamodb_client.load_full_catalog()
+        if _local_store is not None:
+            _catalog = _local_store.load_all()
+        else:
+            _catalog = dynamodb_client.load_full_catalog()
         _dd_context = os.environ.get("DATA_DICTIONARY_CONTEXT", "API")
         logger.info("Cold start: loaded %d endpoints", len(_catalog))
 
     # Create a fresh ASGI app per invocation to avoid Mangum/lifespan reuse issues
     app = mcp.http_app(stateless_http=True)
-    return Mangum(app, lifespan="auto")(event, context)
+    mangum_cls = Mangum
+    if mangum_cls is None:
+        try:
+            from mangum import Mangum as _Mangum
+
+            mangum_cls = _Mangum
+        except ModuleNotFoundError:
+            return _invoke_asgi_apigw_v2(app, event)
+    return mangum_cls(app, lifespan="auto")(event, context)
 
 
-def main() -> None:
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="toolweave",
+        description="ToolWeave MCP server (local SQLite/specs mode or cloud DynamoDB mode).",
+    )
+    parser.add_argument(
+        "--specs-dir",
+        default=os.environ.get("TOOLWEAVE_SPECS_DIR") or None,
+        help="Directory of local OpenAPI/Swagger (.yaml/.yml/.json) specs to ingest.",
+    )
+    parser.add_argument(
+        "--db",
+        default=os.environ.get("TOOLWEAVE_DB_PATH") or None,
+        help="Path to local SQLite catalog database (enables local mode without DynamoDB/S3).",
+    )
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "http", "uds"),
+        default="http",
+        help="MCP transport mode (default: http).",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind host when --transport=http (default: 127.0.0.1).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="Bind port when --transport=http (default: 8080).",
+    )
+    parser.add_argument(
+        "--socket",
+        default=os.environ.get("TOOLWEAVE_SOCKET_PATH", "/tmp/toolweave.sock"),
+        help="Unix Domain Socket path when --transport=uds.",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    global _catalog, _dd_context
+
+    args = build_arg_parser().parse_args(argv)
+    _dd_context = os.environ.get("DATA_DICTIONARY_CONTEXT", "API")
+
+    if args.specs_dir or args.db:
+        db_path = args.db or "toolweave_catalog.db"
+        summary = configure_local_catalog(db_path=db_path, specs_dir=args.specs_dir)
+        logger.info(
+            "Local catalog ready: %d endpoints in %s",
+            summary["endpoint_count"],
+            summary["db_path"],
+        )
+    else:
+        _catalog = dynamodb_client.load_full_catalog()
+
+    if args.transport == "stdio":
+        mcp.run(transport="stdio")
+        return 0
+
     import uvicorn
 
-    global _catalog, _dd_context
-    _catalog = dynamodb_client.load_full_catalog()
-    _dd_context = os.environ.get("DATA_DICTIONARY_CONTEXT", "API")
-    uvicorn.run(mcp.http_app(), host="0.0.0.0", port=8080)
+    if args.transport == "uds":
+        sock = Path(args.socket)
+        sock.parent.mkdir(parents=True, exist_ok=True)
+        if sock.exists():
+            sock.unlink()
+        uvicorn.run(mcp.http_app(), uds=str(sock))
+        return 0
+
+    uvicorn.run(mcp.http_app(), host=args.host, port=args.port)
+    return 0

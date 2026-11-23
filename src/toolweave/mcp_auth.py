@@ -345,6 +345,7 @@ _bearer_auth = BearerAuth(TOKEN_AUDIENCE, legacy_token=lambda: read_configured_t
 TOOL_POLICIES: dict[str, ToolPolicy] = {
     "pre_tool": READ,
     "health": READ,
+    "search_catalog": READ,
     "post_tool": EXECUTE,
     "reload_catalog": EXECUTE,
     "commit_api_call": ToolPolicy("execute", delegable=False),
