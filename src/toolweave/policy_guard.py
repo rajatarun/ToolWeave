@@ -137,7 +137,13 @@ class ToolPolicyGuard:
     def check_call(self, tool_name: str, args: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Evaluate whether ``tool_name`` is permitted and return sanitized arguments.
 
-        Returns ``{"allowed": bool, "reason": str | None, "sanitized_args": dict}``.
+        Returns ``{"allowed": bool, "reason": str | None, "audit_violations": list[str],
+        "sanitized_args": dict}``.
+
+        - ``"disabled"``: bypasses all checks (``allowed=True``, ``audit_violations=[]``).
+        - ``"audit"``: evaluates all rules, records violations in ``audit_violations``,
+          and returns ``allowed=True`` so execution proceeds in audit mode.
+        - ``"enforce"``: fails closed on the first violation (``allowed=False``).
         """
         normalized_tool = str(tool_name or "").strip()
         sanitized_args = self.sanitize_args(args)
@@ -146,43 +152,46 @@ class ToolPolicyGuard:
             return {
                 "allowed": True,
                 "reason": None,
+                "audit_violations": [],
                 "sanitized_args": sanitized_args,
             }
+
+        violations: list[str] = []
 
         if not normalized_tool:
-            return {
-                "allowed": False,
-                "reason": "empty_tool_name",
-                "sanitized_args": sanitized_args,
-            }
+            violations.append("empty_tool_name")
+        else:
+            if normalized_tool in self.denied_tools:
+                violations.append(f"tool_denied:{normalized_tool}")
 
-        if normalized_tool in self.denied_tools:
-            return {
-                "allowed": False,
-                "reason": f"tool_denied:{normalized_tool}",
-                "sanitized_args": sanitized_args,
-            }
+            if self.allowed_tools is not None and normalized_tool not in self.allowed_tools:
+                violations.append(f"tool_not_allowed:{normalized_tool}")
 
-        if self.allowed_tools is not None and normalized_tool not in self.allowed_tools:
-            return {
-                "allowed": False,
-                "reason": f"tool_not_allowed:{normalized_tool}",
-                "sanitized_args": sanitized_args,
-            }
+            if normalized_tool in self.max_calls_per_tool:
+                limit = self.max_calls_per_tool[normalized_tool]
+                used = self._call_counts.get(normalized_tool, 0)
+                if used >= limit:
+                    violations.append(f"tool_quota_exceeded:{normalized_tool}:{used}/{limit}")
 
-        if normalized_tool in self.max_calls_per_tool:
-            limit = self.max_calls_per_tool[normalized_tool]
-            used = self._call_counts.get(normalized_tool, 0)
-            if used >= limit:
+        if violations:
+            if self.enforcement_mode == "audit":
                 return {
-                    "allowed": False,
-                    "reason": f"tool_quota_exceeded:{normalized_tool}:{used}/{limit}",
+                    "allowed": True,
+                    "reason": None,
+                    "audit_violations": violations,
                     "sanitized_args": sanitized_args,
                 }
+            return {
+                "allowed": False,
+                "reason": violations[0],
+                "audit_violations": [],
+                "sanitized_args": sanitized_args,
+            }
 
         return {
             "allowed": True,
             "reason": None,
+            "audit_violations": [],
             "sanitized_args": sanitized_args,
         }
 

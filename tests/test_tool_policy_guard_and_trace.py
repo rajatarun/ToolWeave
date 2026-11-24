@@ -139,11 +139,28 @@ def test_policy_guard_from_agent_policy() -> None:
             "denied_tools": ["orders:delete_order"],
         }
     )
-    assert disabled.check_call("orders:delete_order", {"token": "abc"})["allowed"] is True
-    assert (
-        disabled.check_call("orders:delete_order", {"token": "abc"})["sanitized_args"]["token"]
-        == REDACTED_VALUE
+    disabled_res = disabled.check_call("orders:delete_order", {"token": "abc"})
+    assert disabled_res["allowed"] is True
+    assert disabled_res["audit_violations"] == []
+    assert disabled_res["sanitized_args"]["token"] == REDACTED_VALUE
+
+    # Audit enforcement mode permits calls while recording audit_violations
+    audit_guard = ToolPolicyGuard(
+        denied_tools={"shell"},
+        allowed_tools={"orders:get_order"},
+        max_calls_per_tool={"orders:get_order": 0},
+        enforcement_mode="audit",
     )
+    shell_audit = audit_guard.check_call("shell", {"api_key": "sk-secret"})
+    assert shell_audit["allowed"] is True
+    assert shell_audit["reason"] is None
+    assert "tool_denied:shell" in shell_audit["audit_violations"]
+    assert "tool_not_allowed:shell" in shell_audit["audit_violations"]
+    assert shell_audit["sanitized_args"]["api_key"] == REDACTED_VALUE
+
+    quota_audit = audit_guard.check_call("orders:get_order", {})
+    assert quota_audit["allowed"] is True
+    assert quota_audit["audit_violations"] == ["tool_quota_exceeded:orders:get_order:0/0"]
 
     with pytest.raises(ValueError, match="Unsupported policy schema"):
         ToolPolicyGuard.from_agent_policy({"schema": "unknown-v99"})
