@@ -49,6 +49,7 @@ from .models import (
     ProposalResult,
 )
 from .pipeline import ToolPipeline
+from .spec_linter import lint_openapi_spec, load_openapi_spec
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -646,6 +647,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=[],
         help="Allowlisted host for --dry-run-pipeline (may be repeated).",
     )
+    parser.add_argument(
+        "--lint-spec",
+        default=None,
+        help="Offline-lint an OpenAPI 3.x specification file (.json/.yaml/.yml) and print JSON report.",
+    )
     return parser
 
 
@@ -654,6 +660,28 @@ def main(argv: list[str] | None = None) -> int:
 
     args = build_arg_parser().parse_args(argv)
     _dd_context = os.environ.get("DATA_DICTIONARY_CONTEXT", "API")
+
+    if args.lint_spec:
+        try:
+            spec = load_openapi_spec(args.lint_spec)
+        except (OSError, ValueError, TypeError) as exc:
+            report = {
+                "ok": False,
+                "error_count": 1,
+                "warning_count": 0,
+                "issues": [
+                    {
+                        "severity": "error",
+                        "path": "$",
+                        "message": f"Failed to load OpenAPI spec '{args.lint_spec}': {exc}",
+                    }
+                ],
+            }
+            print(json.dumps(report, indent=2))
+            return 1
+        report = lint_openapi_spec(spec)
+        print(json.dumps(report, indent=2))
+        return 0 if report["ok"] else 1
 
     if args.dry_run_pipeline:
         db_path = args.db or ":memory:"

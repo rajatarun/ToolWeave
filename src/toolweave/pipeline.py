@@ -12,8 +12,10 @@ from __future__ import annotations
 import re
 import time
 import urllib.parse
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -44,6 +46,13 @@ class PipelineStep:
     tool_id: str
     arguments: dict[str, Any] = field(default_factory=dict)
     timeout_seconds: float = 10.0
+    max_retries: int = 0
+    backoff_ms: int = 0
+    retry_on_exceptions: tuple[type[BaseException], ...] = (
+        TimeoutError,
+        ConnectionError,
+        RuntimeError,
+    )
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> PipelineStep:
@@ -57,11 +66,19 @@ class PipelineStep:
         if not isinstance(arguments, dict):
             raise TypeError(f"PipelineStep '{step_id}' arguments must be a JSON object")
         timeout = float(raw.get("timeout_seconds", 10.0))
+        max_retries = int(raw.get("max_retries", 0))
+        backoff_ms = int(raw.get("backoff_ms", 0))
+        if max_retries < 0:
+            raise ValueError(f"PipelineStep '{step_id}' max_retries must be >= 0")
+        if backoff_ms < 0:
+            raise ValueError(f"PipelineStep '{step_id}' backoff_ms must be >= 0")
         return cls(
             step_id=step_id,
             tool_id=tool_id,
             arguments=dict(arguments),
             timeout_seconds=timeout,
+            max_retries=max_retries,
+            backoff_ms=backoff_ms,
         )
 
 
@@ -79,6 +96,7 @@ class StepExecutionResult:
     payload: dict[str, Any] | None = None
     status_code: int = 0
     latency_ms: float = 0.0
+    attempts: int = 1
     output: Any = None
     error: str | None = None
 
@@ -94,6 +112,7 @@ class StepExecutionResult:
             "payload": self.payload,
             "status_code": self.status_code,
             "latency_ms": self.latency_ms,
+            "attempts": self.attempts,
             "output": self.output,
         }
         if self.error is not None:
@@ -339,10 +358,56 @@ class ToolPipeline:
         *,
         allowlist: LanAllowlistGuard | None = None,
         http_executor: Callable[..., Any] | None = None,
+        telemetry_sink: Callable[[dict[str, Any]], None] | None = None,
+        sleep_fn: Callable[[float], None] | None = None,
     ) -> None:
         self.catalog = catalog
         self.allowlist = allowlist
         self._http_executor = http_executor or _default_http_executor
+        self._telemetry_sink = telemetry_sink
+        self._sleep_fn = sleep_fn or time.sleep
+
+    def _emit_telemetry(
+        self,
+        step_result: StepExecutionResult,
+        *,
+        trace_id: str,
+        telemetry_status: str | None = None,
+    ) -> None:
+        if self._telemetry_sink is None:
+            return
+        if telemetry_status is None:
+            if step_result.status == "ok":
+                telemetry_status = "ok"
+            elif step_result.status == "blocked":
+                telemetry_status = "aborted"
+            else:
+                telemetry_status = "error"
+        event: dict[str, Any] = {
+            "schema": "weave-telemetry-v1",
+            "event_id": str(uuid.uuid4()),
+            "source_repo": "ToolWeave",
+            "event_type": "tool_call",
+            "status": telemetry_status,
+            "latency_ms": max(0.0, float(step_result.latency_ms)),
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "cost_usd": 0.0,
+            "trace_id": trace_id,
+            "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "attributes": {
+                "step_id": step_result.step_id,
+                "tool_id": step_result.tool_id,
+                "method": step_result.method,
+                "url": step_result.url,
+                "status_code": step_result.status_code,
+                "attempts": step_result.attempts,
+                "step_status": step_result.status,
+            },
+        }
+        if step_result.error is not None:
+            event["error_message"] = step_result.error
+        self._telemetry_sink(event)
 
     def _lookup_tool(self, tool_id: str, entries: list[EndpointEntry]) -> EndpointEntry | None:
         target = tool_id.strip()
@@ -433,8 +498,10 @@ class ToolPipeline:
         steps: Sequence[PipelineStep | Mapping[str, Any]],
         *,
         dry_run: bool = False,
+        trace_id: str | None = None,
     ) -> PipelineResult:
         """Execute (or dry-run validate) a multi-step tool pipeline."""
+        run_trace_id = trace_id or str(uuid.uuid4())
         entries = self.catalog.load_all()
         normalized_steps: list[PipelineStep] = []
         for raw in steps:
@@ -454,14 +521,16 @@ class ToolPipeline:
             entry = self._lookup_tool(step.tool_id, entries)
             if entry is None:
                 err = f"unknown_tool_id:{step.tool_id}"
-                step_results.append(
-                    StepExecutionResult(
-                        step_id=step.step_id,
-                        tool_id=step.tool_id,
-                        status="error",
-                        error=err,
-                    )
+                res = StepExecutionResult(
+                    step_id=step.step_id,
+                    tool_id=step.tool_id,
+                    status="error",
+                    attempts=0,
+                    error=err,
                 )
+                step_results.append(res)
+                if not dry_run:
+                    self._emit_telemetry(res, trace_id=run_trace_id, telemetry_status="error")
                 return PipelineResult(
                     status="error",
                     dry_run=dry_run,
@@ -483,15 +552,17 @@ class ToolPipeline:
                 )
             except (TemplateResolutionError, SchemaValidationError) as exc:
                 err = str(exc)
-                step_results.append(
-                    StepExecutionResult(
-                        step_id=step.step_id,
-                        tool_id=step.tool_id,
-                        status="error",
-                        method=entry.method.upper(),
-                        error=err,
-                    )
+                res = StepExecutionResult(
+                    step_id=step.step_id,
+                    tool_id=step.tool_id,
+                    status="error",
+                    method=entry.method.upper(),
+                    attempts=0,
+                    error=err,
                 )
+                step_results.append(res)
+                if not dry_run:
+                    self._emit_telemetry(res, trace_id=run_trace_id, telemetry_status="error")
                 return PipelineResult(
                     status="error",
                     dry_run=dry_run,
@@ -503,19 +574,21 @@ class ToolPipeline:
             allowed, allow_reason = self._check_allowlist(target_url)
             if not allowed:
                 err = f"allowlist_blocked:{allow_reason}"
-                step_results.append(
-                    StepExecutionResult(
-                        step_id=step.step_id,
-                        tool_id=step.tool_id,
-                        status="blocked",
-                        method=entry.method.upper(),
-                        url=target_url,
-                        query_params=query_params,
-                        headers=headers,
-                        payload=payload,
-                        error=err,
-                    )
+                res = StepExecutionResult(
+                    step_id=step.step_id,
+                    tool_id=step.tool_id,
+                    status="blocked",
+                    method=entry.method.upper(),
+                    url=target_url,
+                    query_params=query_params,
+                    headers=headers,
+                    payload=payload,
+                    attempts=0,
+                    error=err,
                 )
+                step_results.append(res)
+                if not dry_run:
+                    self._emit_telemetry(res, trace_id=run_trace_id, telemetry_status="aborted")
                 return PipelineResult(
                     status="blocked",
                     dry_run=dry_run,
@@ -536,38 +609,74 @@ class ToolPipeline:
                         headers=headers,
                         payload=payload,
                         latency_ms=0.0,
+                        attempts=0,
                     )
                 )
                 known_prior_steps.add(step.step_id)
                 continue
 
+            max_retries = max(0, int(step.max_retries))
+            backoff_ms = max(0, int(step.backoff_ms))
+            retry_types = step.retry_on_exceptions or ()
+            catch_types: tuple[type[BaseException], ...] = (
+                httpx.HTTPError,
+                OSError,
+                RuntimeError,
+                ValueError,
+                TypeError,
+                *retry_types,
+            )
+
             started = time.monotonic()
-            try:
-                raw_resp = self._http_executor(
-                    entry.method.upper(),
-                    target_url,
-                    query_params=query_params,
-                    headers=headers,
-                    payload=payload,
-                    timeout=step.timeout_seconds,
-                )
-            except (httpx.HTTPError, OSError, RuntimeError, ValueError, TypeError) as exc:
-                latency_ms = round((time.monotonic() - started) * 1000.0, 2)
-                err = f"http_execution_error:{exc}"
-                step_results.append(
-                    StepExecutionResult(
-                        step_id=step.step_id,
-                        tool_id=step.tool_id,
-                        status="error",
-                        method=entry.method.upper(),
-                        url=target_url,
+            attempts = 0
+            raw_resp: Any = None
+            last_exc: BaseException | None = None
+            for attempt in range(1, max_retries + 2):
+                attempts = attempt
+                try:
+                    raw_resp = self._http_executor(
+                        entry.method.upper(),
+                        target_url,
                         query_params=query_params,
                         headers=headers,
                         payload=payload,
-                        latency_ms=latency_ms,
-                        error=err,
+                        timeout=step.timeout_seconds,
                     )
+                    last_exc = None
+                    break
+                except catch_types as exc:
+                    last_exc = exc
+                    should_retry = (
+                        bool(retry_types)
+                        and isinstance(exc, retry_types)
+                        and attempt <= max_retries
+                    )
+                    if should_retry:
+                        if backoff_ms > 0:
+                            delay_seconds = (backoff_ms * (2 ** (attempt - 1))) / 1000.0
+                            self._sleep_fn(delay_seconds)
+                        continue
+                    break
+
+            latency_ms = round((time.monotonic() - started) * 1000.0, 2)
+            if last_exc is not None:
+                err = f"http_execution_error:{last_exc}"
+                res = StepExecutionResult(
+                    step_id=step.step_id,
+                    tool_id=step.tool_id,
+                    status="error",
+                    method=entry.method.upper(),
+                    url=target_url,
+                    query_params=query_params,
+                    headers=headers,
+                    payload=payload,
+                    latency_ms=latency_ms,
+                    attempts=attempts,
+                    error=err,
                 )
+                step_results.append(res)
+                t_status = "timeout" if isinstance(last_exc, TimeoutError) else "error"
+                self._emit_telemetry(res, trace_id=run_trace_id, telemetry_status=t_status)
                 return PipelineResult(
                     status="error",
                     dry_run=False,
@@ -576,7 +685,6 @@ class ToolPipeline:
                     error=err,
                 )
 
-            latency_ms = round((time.monotonic() - started) * 1000.0, 2)
             status_code = 200
             step_output = raw_resp
             if isinstance(raw_resp, Mapping) and "status_code" in raw_resp:
@@ -588,22 +696,23 @@ class ToolPipeline:
 
             if status_code >= 400:
                 err = f"http_status_error:{status_code}"
-                step_results.append(
-                    StepExecutionResult(
-                        step_id=step.step_id,
-                        tool_id=step.tool_id,
-                        status="error",
-                        method=entry.method.upper(),
-                        url=target_url,
-                        query_params=query_params,
-                        headers=headers,
-                        payload=payload,
-                        status_code=status_code,
-                        latency_ms=latency_ms,
-                        output=step_output,
-                        error=err,
-                    )
+                res = StepExecutionResult(
+                    step_id=step.step_id,
+                    tool_id=step.tool_id,
+                    status="error",
+                    method=entry.method.upper(),
+                    url=target_url,
+                    query_params=query_params,
+                    headers=headers,
+                    payload=payload,
+                    status_code=status_code,
+                    latency_ms=latency_ms,
+                    attempts=attempts,
+                    output=step_output,
+                    error=err,
                 )
+                step_results.append(res)
+                self._emit_telemetry(res, trace_id=run_trace_id, telemetry_status="error")
                 return PipelineResult(
                     status="error",
                     dry_run=False,
@@ -614,21 +723,22 @@ class ToolPipeline:
 
             outputs[step.step_id] = step_output
             known_prior_steps.add(step.step_id)
-            step_results.append(
-                StepExecutionResult(
-                    step_id=step.step_id,
-                    tool_id=step.tool_id,
-                    status="ok",
-                    method=entry.method.upper(),
-                    url=target_url,
-                    query_params=query_params,
-                    headers=headers,
-                    payload=payload,
-                    status_code=status_code,
-                    latency_ms=latency_ms,
-                    output=step_output,
-                )
+            res = StepExecutionResult(
+                step_id=step.step_id,
+                tool_id=step.tool_id,
+                status="ok",
+                method=entry.method.upper(),
+                url=target_url,
+                query_params=query_params,
+                headers=headers,
+                payload=payload,
+                status_code=status_code,
+                latency_ms=latency_ms,
+                attempts=attempts,
+                output=step_output,
             )
+            step_results.append(res)
+            self._emit_telemetry(res, trace_id=run_trace_id, telemetry_status="ok")
 
         return PipelineResult(
             status="dry_run" if dry_run else "completed",
