@@ -24,6 +24,7 @@ from .executor import _build_url
 from .local_catalog import LanAllowlistGuard, SQLiteCatalogStore
 from .models import EndpointEntry
 from .plan_guard import _BAD_SEGMENT, _header_allowed
+from .policy_guard import ToolPolicyGuard
 
 _STEP_REF_FULL = re.compile(r"^\$steps\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_.-]+)$")
 _STEP_REF_INLINE = re.compile(r"\$steps\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_.-]+)")
@@ -360,12 +361,14 @@ class ToolPipeline:
         http_executor: Callable[..., Any] | None = None,
         telemetry_sink: Callable[[dict[str, Any]], None] | None = None,
         sleep_fn: Callable[[float], None] | None = None,
+        policy_guard: ToolPolicyGuard | None = None,
     ) -> None:
         self.catalog = catalog
         self.allowlist = allowlist
         self._http_executor = http_executor or _default_http_executor
         self._telemetry_sink = telemetry_sink
         self._sleep_fn = sleep_fn or time.sleep
+        self.policy_guard = policy_guard
 
     def _emit_telemetry(
         self,
@@ -373,9 +376,15 @@ class ToolPipeline:
         *,
         trace_id: str,
         telemetry_status: str | None = None,
+        extra_attributes: Mapping[str, Any] | None = None,
     ) -> None:
         if self._telemetry_sink is None:
             return
+        safe_trace_id = (
+            trace_id.strip()
+            if isinstance(trace_id, str) and trace_id.strip()
+            else f"trace-{uuid.uuid4().hex}"
+        )
         if telemetry_status is None:
             if step_result.status == "ok":
                 telemetry_status = "ok"
@@ -383,6 +392,17 @@ class ToolPipeline:
                 telemetry_status = "aborted"
             else:
                 telemetry_status = "error"
+        attributes: dict[str, Any] = {
+            "step_id": step_result.step_id,
+            "tool_id": step_result.tool_id,
+            "method": step_result.method,
+            "url": step_result.url,
+            "status_code": step_result.status_code,
+            "attempts": step_result.attempts,
+            "step_status": step_result.status,
+        }
+        if extra_attributes:
+            attributes.update(extra_attributes)
         event: dict[str, Any] = {
             "schema": "weave-telemetry-v1",
             "event_id": str(uuid.uuid4()),
@@ -393,17 +413,9 @@ class ToolPipeline:
             "tokens_in": 0,
             "tokens_out": 0,
             "cost_usd": 0.0,
-            "trace_id": trace_id,
+            "trace_id": safe_trace_id,
             "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-            "attributes": {
-                "step_id": step_result.step_id,
-                "tool_id": step_result.tool_id,
-                "method": step_result.method,
-                "url": step_result.url,
-                "status_code": step_result.status_code,
-                "attempts": step_result.attempts,
-                "step_status": step_result.status,
-            },
+            "attributes": attributes,
         }
         if step_result.error is not None:
             event["error_message"] = step_result.error
@@ -501,7 +513,11 @@ class ToolPipeline:
         trace_id: str | None = None,
     ) -> PipelineResult:
         """Execute (or dry-run validate) a multi-step tool pipeline."""
-        run_trace_id = trace_id or str(uuid.uuid4())
+        run_trace_id = (
+            trace_id.strip()
+            if isinstance(trace_id, str) and trace_id.strip()
+            else f"trace-{uuid.uuid4().hex}"
+        )
         entries = self.catalog.load_all()
         normalized_steps: list[PipelineStep] = []
         for raw in steps:
@@ -571,6 +587,54 @@ class ToolPipeline:
                     error=err,
                 )
 
+            policy_extra_attrs: dict[str, Any] | None = None
+            if self.policy_guard is not None:
+                policy_decision = self.policy_guard.check_call(step.tool_id, resolved_args)
+                sanitized_args = policy_decision["sanitized_args"]
+                policy_extra_attrs = {"sanitized_args": sanitized_args}
+                if not policy_decision["allowed"]:
+                    policy_reason = str(policy_decision.get("reason") or "policy_denied")
+                    err = f"policy_denied:{policy_reason}"
+                    sanitized_headers = {
+                        str(k): str(v)
+                        for k, v in self.policy_guard.sanitize_args(headers).items()
+                    }
+                    sanitized_payload = (
+                        self.policy_guard.sanitize_args(payload)
+                        if isinstance(payload, dict)
+                        else payload
+                    )
+                    res = StepExecutionResult(
+                        step_id=step.step_id,
+                        tool_id=step.tool_id,
+                        status="blocked",
+                        method=entry.method.upper(),
+                        url=target_url,
+                        query_params=self.policy_guard.sanitize_args(query_params),
+                        headers=sanitized_headers,
+                        payload=sanitized_payload,
+                        attempts=0,
+                        error=err,
+                    )
+                    step_results.append(res)
+                    if not dry_run:
+                        self._emit_telemetry(
+                            res,
+                            trace_id=run_trace_id,
+                            telemetry_status="aborted",
+                            extra_attributes={
+                                "policy_reason": policy_reason,
+                                "sanitized_args": sanitized_args,
+                            },
+                        )
+                    return PipelineResult(
+                        status="blocked",
+                        dry_run=dry_run,
+                        steps=step_results,
+                        outputs=outputs,
+                        error=err,
+                    )
+
             allowed, allow_reason = self._check_allowlist(target_url)
             if not allowed:
                 err = f"allowlist_blocked:{allow_reason}"
@@ -588,7 +652,12 @@ class ToolPipeline:
                 )
                 step_results.append(res)
                 if not dry_run:
-                    self._emit_telemetry(res, trace_id=run_trace_id, telemetry_status="aborted")
+                    self._emit_telemetry(
+                        res,
+                        trace_id=run_trace_id,
+                        telemetry_status="aborted",
+                        extra_attributes=policy_extra_attrs,
+                    )
                 return PipelineResult(
                     status="blocked",
                     dry_run=dry_run,
@@ -614,6 +683,9 @@ class ToolPipeline:
                 )
                 known_prior_steps.add(step.step_id)
                 continue
+
+            if self.policy_guard is not None:
+                self.policy_guard.record_call(step.tool_id)
 
             max_retries = max(0, int(step.max_retries))
             backoff_ms = max(0, int(step.backoff_ms))
@@ -676,7 +748,12 @@ class ToolPipeline:
                 )
                 step_results.append(res)
                 t_status = "timeout" if isinstance(last_exc, TimeoutError) else "error"
-                self._emit_telemetry(res, trace_id=run_trace_id, telemetry_status=t_status)
+                self._emit_telemetry(
+                    res,
+                    trace_id=run_trace_id,
+                    telemetry_status=t_status,
+                    extra_attributes=policy_extra_attrs,
+                )
                 return PipelineResult(
                     status="error",
                     dry_run=False,
@@ -712,7 +789,12 @@ class ToolPipeline:
                     error=err,
                 )
                 step_results.append(res)
-                self._emit_telemetry(res, trace_id=run_trace_id, telemetry_status="error")
+                self._emit_telemetry(
+                    res,
+                    trace_id=run_trace_id,
+                    telemetry_status="error",
+                    extra_attributes=policy_extra_attrs,
+                )
                 return PipelineResult(
                     status="error",
                     dry_run=False,
@@ -738,7 +820,12 @@ class ToolPipeline:
                 output=step_output,
             )
             step_results.append(res)
-            self._emit_telemetry(res, trace_id=run_trace_id, telemetry_status="ok")
+            self._emit_telemetry(
+                res,
+                trace_id=run_trace_id,
+                telemetry_status="ok",
+                extra_attributes=policy_extra_attrs,
+            )
 
         return PipelineResult(
             status="dry_run" if dry_run else "completed",
